@@ -95,7 +95,7 @@ open class WebDialog : Dialog {
   private val consentRevoked = Runnable {
     Handler(Looper.getMainLooper()).post { cancelForConsent() }
   }
-  private fun cancelForConsent() {
+  private fun cancelForConsent() = TrackingConsent.cancellationScope {
     uploadTask?.cancel(true)
     url = null
     webView?.let { it.stopLoading(); it.clearHistory(); it.clearCache(true); it.destroy() }

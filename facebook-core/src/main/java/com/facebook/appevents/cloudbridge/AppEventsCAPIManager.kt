@@ -129,14 +129,15 @@ object AppEventsCAPIManager {
   }
 
   internal fun getCAPIGSettingsFromGraphResponse(response: GraphResponse) {
-    if (response.error != null) {
+    val error = response.error
+    if (error != null) {
 
       Logger.log(
           LoggingBehavior.APP_EVENTS,
           TAG as String,
           " \n\nGraph Response Error: \n================\nResponse Error: %s\nResponse Error Exception: %s\n\n ",
-          response.error.toString(),
-          response.error.exception.toString())
+          error.toString(),
+          error.exception.toString())
 
       val cbCredentials = savedCloudBridgeCredentials
 

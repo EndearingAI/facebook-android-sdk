@@ -42,6 +42,23 @@ class WebDialogTrackingConsentTest {
     assertNull("Denied dialogs cannot create a transport", dialog.view())
     dialog.dismiss()
   }
+  @Test fun webDialogCancellationCannotRegrantWithdrawnConsent() {
+    val dialog = ProbeDialog(activity)
+    var completions = 0
+    dialog.onCompleteListener = WebDialog.OnCompleteListener { _, _ ->
+      completions++
+      try {
+        FacebookSdk.setTrackingEnabled(activity, true)
+        FacebookSdk.sdkInitialize(activity, FacebookSdk.InitializeCallback {})
+      } catch (rejected: IllegalStateException) { /* A cancelled dialog cannot grant consent. */ }
+    }
+    dialog.show()
+    FacebookSdk.setTrackingEnabled(activity, false)
+    shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(1, completions)
+    assertFalse("The cancelled dialog cannot reopen tracking", FacebookSdk.isTrackingEnabled())
+    assertNull(FacebookSdk.getAnonymousID())
+  }
   @Test fun withdrawalStopsWebViewAndRejectsEverySubresourceAfterRegrant() {
     FacebookSdk.setTrackingEnabled(activity, true)
     val dialog = ProbeDialog(activity)

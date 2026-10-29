@@ -70,6 +70,7 @@ object FacebookSdk {
     private var initialization: SdkInitialization? = null
     private var initializationComplete = false
     private var trackingDataNeedsClearing = true
+    private var changingConsent = false
 
     @JvmStatic fun isTrackingEnabled(): Boolean = TrackingConsent.isEnabled()
     @JvmStatic fun getAnonymousID(): String? = synchronized(TrackingConsent.lock) {
@@ -78,25 +79,43 @@ object FacebookSdk {
     }
     @JvmStatic fun setTrackingEnabled(context: Context, enabled: Boolean) {
         synchronized(TrackingConsent.lock) {
+            if (changingConsent) {
+                check(!enabled) { "Cannot enable Facebook tracking while withdrawal is in progress" }
+                return
+            }
             applicationContext = context.applicationContext
             if (enabled) {
+                TrackingConsent.requireGrantable()
                 if (trackingDataNeedsClearing) {
                     TrackingData.clear(applicationContext)
                     trackingDataNeedsClearing = false
                 }
                 TrackingConsent.grant()
             } else {
-                TrackingConsent.revoke()
+                changingConsent = true
                 sdkInitialized.set(false)
                 isFullyInitialized = false
                 initializationComplete = false
                 val cancelled = initialization
                 initialization = null
                 trackingDataNeedsClearing = true
+                val failure = IllegalStateException("Unable to finish Facebook tracking withdrawal; tracking remains disabled")
                 try {
-                    TrackingData.clear(applicationContext)
-                    trackingDataNeedsClearing = false
-                } finally { cancelled?.cancel() }
+                    val steps = listOf<() -> Unit>(
+                        { TrackingConsent.revoke() },
+                        { TrackingData.clear(applicationContext); trackingDataNeedsClearing = false },
+                        { cancelled?.cancel() }
+                    )
+                    steps.forEach { step ->
+                        try { step() } catch (error: RuntimeException) { failure.addSuppressed(error) }
+                    }
+                } finally {
+                    sdkInitialized.set(false)
+                    isFullyInitialized = false
+                    initializationComplete = false
+                    changingConsent = false
+                }
+                if (failure.suppressed.isNotEmpty()) throw failure
             }
         }
     }

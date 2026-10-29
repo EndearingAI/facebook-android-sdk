@@ -945,8 +945,9 @@ object Utility {
     }
     val graphCallback =
         GraphRequest.Callback { response ->
-          if (response.error != null) {
-            callback.onFailure(response.error.exception)
+          val error = response.error
+          if (error != null) {
+            callback.onFailure(error.exception)
           } else {
             putProfileInformation(accessToken, checkNotNull(response.jsonObject))
             callback.onSuccess(response.jsonObject)

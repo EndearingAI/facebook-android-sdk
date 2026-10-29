@@ -56,13 +56,20 @@ preserved preference entries are long-valued `*ping` install markers in
 identity and cannot replay withdrawn events.
 
 Erasure is synchronous. If a file or preferences store cannot be erased, the call
-throws and tracking remains disabled; retry cleanup before granting. An HTTP
+throws and tracking remains disabled; retry cleanup before granting. A nested
+grant during withdrawal, or a grant from a cancelled SDK callback, throws
+`IllegalStateException` and cannot reopen the gate. An HTTP
 request already accepted by a remote server cannot be recalled. Its late response
 cannot revive the SDK or publish state into a later grant.
 
 Joined initialization callbacks settle once. The two-method callback receives
 `onInitializationFailed` on cancellation or failure. A legacy one-method callback
 settles via `onInitialized` on cancellation, with `isInitialized() == false`.
+Graph request and AsyncTask callbacks also settle once on withdrawal, even if the
+work has not started or success is already posted to a Handler. Their cancellation
+response contains an error without user payloads; request parameters, identity,
+and pending response bodies are cleared before delivery. Cancellation callbacks
+cannot restart tracking or enqueue work under a later grant.
 
 ## Build and publication
 
@@ -106,7 +113,9 @@ logging flags, offline event erasure, identity rotation, install-once retention,
 stale work and requests, initialization fan-out, raw HTTP and redirects, retained
 streams, in-flight settings/gatekeepers, blocked connects, automatic collector
 identity and crash-handler cleanup, erasure failure, preference backups, and
-WebView withdrawal/subresource denial. Test routing applies only to provider
+WebView withdrawal/subresource denial, advertiser-ID codeless suppression, and
+Graph/AsyncTask cancellation before execution, during HTTP, after posted success
+or provider errors, and for batches that contain requests from different grants. Reentrant initialization and WebDialog grants remain denied. Test routing applies only to provider
 HTTPS hosts; dependency downloads use the normal HTTPS implementation.
 
 Build outputs, recorded requests, and dependency binaries are not committed.

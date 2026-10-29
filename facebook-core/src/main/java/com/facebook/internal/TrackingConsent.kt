@@ -36,7 +36,24 @@ object TrackingConsent {
     connections.clear()
     val callbacks = revocationCallbacks.toList()
     revocationCallbacks.clear()
-    callbacks.forEach { it.run() }
+    val failure = IllegalStateException("Facebook tracking cancellation callback failed")
+    callbacks.forEach { callback ->
+      try { cancellationScope { callback.run() } }
+      catch (error: RuntimeException) { failure.addSuppressed(error) }
+    }
+    if (failure.suppressed.isNotEmpty()) throw failure
+  }
+  internal fun requireGrantable() {
+    val work = workGeneration.get()
+    check(work == null || work >= 0 && work == generation) {
+      "Cannot enable Facebook tracking from cancelled SDK work"
+    }
+  }
+  fun <T> cancellationScope(work: () -> T): T {
+    val previous = workGeneration.get()
+    workGeneration.set(-1L)
+    try { return work() }
+    finally { if (previous == null) workGeneration.remove() else workGeneration.set(previous) }
   }
   @JvmStatic fun requireEnabled() { if (!isEnabled()) throw CancellationException("Facebook tracking consent is not granted") }
   @JvmStatic fun update(work: Runnable) = synchronized(lock) { if (isEnabled()) work.run() }

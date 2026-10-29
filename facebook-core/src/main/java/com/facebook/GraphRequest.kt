@@ -93,6 +93,17 @@ import org.json.JSONObject
  */
 class GraphRequest {
   internal val consentGeneration = TrackingConsent.capture()
+  internal fun clearForConsent() {
+    accessToken = null
+    graphPath = null
+    graphObject = null
+    parameters.clear()
+    tag = null
+    callback = null
+    overriddenURL = null
+    batchEntryName = null
+    batchEntryDependsOn = null
+  }
   /** The access token associated with this request. Null if none has been specified. */
   var accessToken: AccessToken?
 
@@ -838,6 +849,10 @@ class GraphRequest {
     @JvmStatic
     fun executeBatchAndWait(requests: GraphRequestBatch): List<GraphResponse> {
       notEmptyAndContainsNoNulls(requests, "requests")
+      return executeBatchAndWait(requests, GraphRequestCompletion(requests))
+    }
+
+    internal fun executeBatchAndWait(requests: GraphRequestBatch, completion: GraphRequestCompletion): List<GraphResponse> {
       var connection: HttpURLConnection? = null
       return try {
         var exception: Exception? = null
@@ -849,12 +864,12 @@ class GraphRequest {
               null
             }
         if (connection != null) {
-          executeConnectionAndWait(connection, requests)
+          executeConnectionAndWait(connection, requests, completion)
         } else {
           val responses =
               constructErrorResponses(requests.requests, null, FacebookException(exception))
-          runCallbacks(requests, responses)
-          responses
+          runCallbacks(requests, responses, completion)
+          if (completion.wasCancelled()) completion.cancellationResponses() else responses
         }
       } finally {
         disconnectQuietly(connection)
@@ -959,19 +974,26 @@ class GraphRequest {
         requests: GraphRequestBatch
     ): List<GraphResponse> {
       notEmptyAndContainsNoNulls(requests, "requests")
+      return executeConnectionAndWait(connection, requests, GraphRequestCompletion(requests))
+    }
+
+    internal fun executeConnectionAndWait(connection: HttpURLConnection, requests: GraphRequestBatch, completion: GraphRequestCompletion): List<GraphResponse> {
       return try {
-        TrackingConsent.scope(requests.first().consentGeneration) { executeConnectionWithConsent(connection, requests) }
+        TrackingConsent.scope(requests.first().consentGeneration) { executeConnectionWithConsent(connection, requests, completion) }
       } catch (cancelled: java.util.concurrent.CancellationException) {
         disconnectQuietly(connection)
-        constructErrorResponses(requests.requests, null, FacebookException("Facebook tracking consent changed", cancelled))
+        completion.cancel()
+        completion.cancellationResponses()
       }
     }
 
-    private fun executeConnectionWithConsent(connection: HttpURLConnection, requests: GraphRequestBatch): List<GraphResponse> {
+    private fun executeConnectionWithConsent(connection: HttpURLConnection, requests: GraphRequestBatch, completion: GraphRequestCompletion): List<GraphResponse> {
       val responses = fromHttpConnection(connection, requests)
       if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) {
         disconnectQuietly(connection)
-        return constructErrorResponses(requests.requests, null, FacebookException("Facebook tracking consent changed"))
+        completion.cancel()
+        responses.forEach { it.clearForConsent() }
+        return completion.cancellationResponses()
       }
       disconnectQuietly(connection)
       val numRequests = requests.size
@@ -980,7 +1002,8 @@ class GraphRequest {
             String.format(
                 Locale.US, "Received %d responses while expecting %d", responses.size, numRequests))
       }
-      runCallbacks(requests, responses)
+      runCallbacks(requests, responses, completion)
+      if (completion.wasCancelled()) return completion.cancellationResponses()
 
       // Try extending the current access token in case it's needed.
       AccessTokenManager.getInstance().extendAccessTokenIfNeeded()
@@ -1040,36 +1063,13 @@ class GraphRequest {
     }
 
     @JvmStatic
-    internal fun runCallbacks(requests: GraphRequestBatch, responses: List<GraphResponse>) {
-      if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) return
-      val numRequests = requests.size
-
-      // Compile the list of callbacks to call and then run them either on this thread or via the
-      // Handler we received
-      val callbacks = ArrayList<Pair<Callback, GraphResponse>>()
-      for (i in 0 until numRequests) {
-        val request = requests[i]
-        if (request.callback != null) {
-          callbacks.add(Pair(request.callback, responses[i]))
-        }
-      }
-      if (callbacks.size > 0) {
-        val runnable = Runnable {
-        if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) return@Runnable
-          for (pair in callbacks) {
-            pair.first.onCompleted(pair.second)
-          }
-          val batchCallbacks: List<GraphRequestBatch.Callback> = requests.callbacks
-          for (batchCallback in batchCallbacks) {
-            batchCallback.onBatchCompleted(requests)
-          }
-        }
-        val callbackHandler = requests.callbackHandler
-        // Post to the handler.
-        val scoped = TrackingConsent.wrap(requests.first().consentGeneration, runnable)
-        callbackHandler?.post(scoped) ?: // Run on this thread.
-        scoped.run()
-      }
+    @JvmOverloads
+    internal fun runCallbacks(
+        requests: GraphRequestBatch,
+        responses: List<GraphResponse>,
+        completion: GraphRequestCompletion = GraphRequestCompletion(requests)
+    ) {
+      completion.complete(responses)
     }
 
     private fun getDefaultPhotoPathIfNull(graphPath: String?): String {

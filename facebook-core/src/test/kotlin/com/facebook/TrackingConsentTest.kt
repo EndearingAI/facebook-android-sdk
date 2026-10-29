@@ -133,6 +133,197 @@ class TrackingConsentTest {
     assertNull(AttributionIdentifiers.getAttributionIdentifiers(application)?.androidAdvertiserId)
   }
 
+  @Test fun manualAttributionWithAdvertiserIdCannotFetchCodelessSetup() {
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse = MockResponse().setBody(
+        if (request.path.orEmpty().contains("/activities")) "{\"success\":true}"
+        else "{\"supports_implicit_sdk_logging\":false,\"app_events_feature_bitmask\":32,\"auto_log_app_events_enabled\":true}")
+    }
+    FacebookSdk.setAdvertiserIDCollectionEnabled(true)
+    FacebookSdk.setTrackingEnabled(application, true)
+    seedAdvertiserId("gaid-codeless-probe")
+    FacebookSdk.fullyInitialize()
+    FacebookSdk.sdkInitialize(application, FacebookSdk.InitializeCallback {})
+    drainSdk()
+    AppEventsLogger.activateApp(application)
+    drainSdk()
+    flushEvents()
+    val requests = recorded()
+    val activities = requests.filter { it.path.orEmpty().contains("/activities") }.map(::body)
+    assertTrue("Native install must still be delivered", activities.any { it.contains("MOBILE_APP_INSTALL") })
+    assertTrue("Native app activation must still be delivered", activities.any { it.contains("fb_mobile_activate_app") })
+    assertTrue("The GAID fixture must reach the permitted attribution payload", activities.any { it.contains("gaid-codeless-probe") })
+    assertTrue("Automatic logging off must forbid advertiser-ID codeless configuration requests", requests.none {
+      it.requestUrl?.queryParameter("fields") == "auto_event_setup_enabled" ||
+        it.requestUrl?.queryParameter("advertiser_id") == "gaid-codeless-probe"
+    })
+    assertFalse(FacebookSdk.getAutoLogAppEventsEnabled())
+  }
+
+  @Test fun disablingAutomaticLoggingCancelsQueuedCodelessLookup() {
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest) = MockResponse().setBody(
+        "{\"supports_implicit_sdk_logging\":false,\"app_events_feature_bitmask\":32,\"auto_log_app_events_enabled\":true}")
+    }
+    UserSettingsManager.setAutoLogAppEventsEnabled(true)
+    FacebookSdk.setAdvertiserIDCollectionEnabled(true)
+    FacebookSdk.setTrackingEnabled(application, true)
+    seedAdvertiserId("gaid-codeless-probe")
+    FacebookSdk.fullyInitialize()
+    FacebookSdk.sdkInitialize(application, FacebookSdk.InitializeCallback {})
+    FacebookSdk.setAutoLogAppEventsEnabled(false)
+    drainSdk()
+    assertTrue("A queued automatic lookup must recheck the local setting before collecting a GAID", recorded().none {
+      it.requestUrl?.queryParameter("fields") == "auto_event_setup_enabled" ||
+        it.requestUrl?.queryParameter("advertiser_id") == "gaid-codeless-probe"
+    })
+  }
+
+  @Test fun heldGraphRequestSettlesWithOnePurgedCancellationAfterRegrant() {
+    grantAndInitialize()
+    val started = CountDownLatch(1)
+    val released = CountDownLatch(1)
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse {
+        if (request.path.orEmpty().contains("/activities")) { started.countDown(); released.await(5, TimeUnit.SECONDS) }
+        return MockResponse().setBody("{\"success\":true,\"private_response\":\"old-response\"}")
+      }
+    }
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val request = privateGraphRequest { responses.add(it) }
+    val batch = GraphRequestBatch(request).apply { callbackHandler = android.os.Handler(android.os.Looper.getMainLooper()) }
+    val work = FutureTask { batch.executeAndWait() }
+    Thread(work).start()
+    assertTrue(started.await(5, TimeUnit.SECONDS))
+    FacebookSdk.setTrackingEnabled(application, false)
+    FacebookSdk.setTrackingEnabled(application, true)
+    released.countDown()
+    work.get(5, TimeUnit.SECONDS)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("Withdrawal must settle a held Graph callback exactly once", 1, responses.size)
+    assertPurgedCancellation(responses.single())
+  }
+
+  @Test fun postedGraphSuccessBecomesOnePurgedCancellationBeforeCallbackRuns() {
+    grantAndInitialize()
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val request = privateGraphRequest { responses.add(it) }
+    val batch = GraphRequestBatch(request).apply { callbackHandler = android.os.Handler(android.os.Looper.getMainLooper()) }
+    val batchCalls = AtomicInteger()
+    batch.addCallback { batchCalls.incrementAndGet() }
+    val work = FutureTask { batch.executeAndWait() }
+    Thread(work).start()
+    val received = work.get(5, TimeUnit.SECONDS)
+    assertNull(received.single().error)
+    assertEquals(0, responses.size)
+    FacebookSdk.setTrackingEnabled(application, false)
+    FacebookSdk.setTrackingEnabled(application, true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("A posted success must settle once as cancellation", 1, responses.size)
+    assertEquals(1, batchCalls.get())
+    assertPurgedCancellation(responses.single())
+    assertNull("Pending responses must release their old payload", received.single().rawResponse)
+  }
+
+  @Test fun postedGraphErrorReleasesProviderMessageAndBodyOnWithdrawal() {
+    grantAndInitialize()
+    server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(400).setBody(
+        "{\"error\":{\"message\":\"old-user-error\",\"type\":\"OAuthException\",\"code\":100}}")
+    }
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val request = privateGraphRequest { responses.add(it) }
+    val batch = GraphRequestBatch(request).apply { callbackHandler = android.os.Handler(android.os.Looper.getMainLooper()) }
+    val work = FutureTask { batch.executeAndWait() }
+    Thread(work).start()
+    val received = work.get(5, TimeUnit.SECONDS)
+    assertEquals("old-user-error", received.single().error?.errorMessage)
+    FacebookSdk.setTrackingEnabled(application, false)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(1, responses.size)
+    assertPurgedCancellation(responses.single())
+    assertPurgedCancellation(received.single())
+  }
+
+  @Test fun queuedAsyncGraphRequestSettlesCancellationWithoutStartingNetwork() {
+    grantAndInitialize()
+    recorded()
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val request = privateGraphRequest { responses.add(it) }
+    val task = request.executeAsync()
+    FacebookSdk.setTrackingEnabled(application, false)
+    FacebookSdk.setTrackingEnabled(application, true)
+    drainSdk()
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("Queued AsyncTask cancellation must settle its callback", 1, responses.size)
+    assertPurgedCancellation(responses.single())
+    assertTrue("The pending AsyncTask must be cancelled", task.isCancelled)
+    assertTrue(recorded().isEmpty())
+  }
+
+  @Test fun ordinaryGraphSuccessDoesNotReceiveAnotherCallbackOnWithdrawal() {
+    grantAndInitialize()
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val request = privateGraphRequest { responses.add(it) }
+    val batch = GraphRequestBatch(request).apply { callbackHandler = android.os.Handler(android.os.Looper.getMainLooper()) }
+    val work = FutureTask { batch.executeAndWait() }
+    Thread(work).start(); work.get(5, TimeUnit.SECONDS)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(1, responses.size)
+    assertNull(responses.single().error)
+    FacebookSdk.setTrackingEnabled(application, false)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("A delivered success is already settled", 1, responses.size)
+  }
+
+  @Test fun mixedGenerationBatchCancelsEveryMemberWithoutBorrowingFreshConsent() {
+    grantAndInitialize()
+    val responses = CopyOnWriteArrayList<GraphResponse>()
+    val forbiddenWork = AtomicInteger()
+    var nestedGrants = 0
+    val callback: (GraphResponse) -> Unit = { response ->
+      responses.add(response)
+      FacebookSdk.getExecutor().execute { forbiddenWork.incrementAndGet() }
+      try { FacebookSdk.setTrackingEnabled(application, true); nestedGrants++ }
+      catch (rejected: IllegalStateException) { /* Cancellation is not a new grant authority. */ }
+    }
+    val stale = privateGraphRequest(callback)
+    FacebookSdk.setTrackingEnabled(application, false)
+    grantAndInitialize()
+    val fresh = privateGraphRequest(callback)
+    recorded()
+    val batch = GraphRequestBatch(fresh, stale).apply { callbackHandler = android.os.Handler(android.os.Looper.getMainLooper()) }
+    val work = FutureTask { batch.executeAndWait() }
+    Thread(work).start(); work.get(5, TimeUnit.SECONDS)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    drainSdk()
+    assertEquals(2, responses.size)
+    responses.forEach { assertPurgedCancellation(it) }
+    assertEquals(0, nestedGrants)
+    assertEquals(0, forbiddenWork.get())
+    assertTrue(recorded().isEmpty())
+    assertTrue("Cancelling the invalid batch must not revoke the new host grant", FacebookSdk.isTrackingEnabled())
+  }
+
+  @Test fun initializationCancellationCannotRegrantDuringWithdrawal() {
+    FacebookSdk.setTrackingEnabled(application, true)
+    var failures = 0
+    FacebookSdk.sdkInitialize(application, object : FacebookSdk.TrackingInitializeCallback {
+      override fun onInitialized() { fail("Initialization should still be queued") }
+      override fun onInitializationFailed(error: FacebookException) {
+        failures++
+        try {
+          FacebookSdk.setTrackingEnabled(application, true)
+          FacebookSdk.sdkInitialize(application, FacebookSdk.InitializeCallback {})
+        } catch (rejected: IllegalStateException) { /* Nested grants are invalid. */ }
+      }
+    })
+    FacebookSdk.setTrackingEnabled(application, false)
+    assertEquals(1, failures)
+    assertFalse("The outer withdrawal must return with tracking off", FacebookSdk.isTrackingEnabled())
+    assertNull(FacebookSdk.getAnonymousID())
+  }
+
   @Test fun offlineActivationIsErasedAndCannotReplayAfterRegrant() {
     grantAndInitialize()
     offline = true
@@ -385,6 +576,42 @@ class TrackingConsentTest {
       revocation.get(1, TimeUnit.SECONDS)
       assertFalse(FacebookSdk.isTrackingEnabled())
     } finally { released.countDown(); connecting.get(5, TimeUnit.SECONDS); revocation.get(5, TimeUnit.SECONDS) }
+  }
+
+  private fun seedAdvertiserId(value: String) {
+    val identifiers = AttributionIdentifiers()
+    AttributionIdentifiers::class.java.getDeclaredField("androidAdvertiserIdValue").apply {
+      isAccessible = true; set(identifiers, value)
+    }
+    AttributionIdentifiers::class.java.getDeclaredField("fetchTime").apply {
+      isAccessible = true; setLong(identifiers, System.currentTimeMillis())
+    }
+    AttributionIdentifiers.cachedIdentifiers = identifiers
+  }
+
+  private fun privateGraphRequest(callback: (GraphResponse) -> Unit): GraphRequest =
+    GraphRequest.newPostRequest(null, "123456789/activities", JSONObject().put("private_action", "old-user"), GraphRequest.Callback(callback)).apply {
+      parameters.putString("private_parameter", "old-user")
+      tag = "old-user-tag"
+    }
+
+  private fun assertPurgedCancellation(response: GraphResponse) {
+    assertNotNull(response.error)
+    assertTrue(response.error!!.exception?.message.orEmpty().contains("consent"))
+    assertNull(response.error!!.requestResultBody)
+    assertNull(response.error!!.requestResult)
+    assertNull(response.error!!.batchRequestResult)
+    assertNull(response.error!!.connection)
+    assertFalse(response.error!!.errorMessage.orEmpty().contains("old-user"))
+    assertNull(response.rawResponse)
+    assertNull(response.jsonObject)
+    assertNull(response.jsonArray)
+    assertNull(response.connection)
+    assertTrue(response.request.parameters.isEmpty)
+    assertNull(response.request.graphObject)
+    assertNull(response.request.accessToken)
+    assertNull(response.request.tag)
+    assertNull(response.request.graphPath)
   }
 
   private fun grantAndInitialize() {

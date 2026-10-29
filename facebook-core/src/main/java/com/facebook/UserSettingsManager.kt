@@ -117,7 +117,7 @@ internal object UserSettingsManager {
   }
 
   private fun initializeCodelessSetupEnabledAsync() {
-    if (!TrackingConsent.isEnabled() && autoLogAppEventsEnabledLocally.getValue()) return
+    if (!TrackingConsent.isEnabled() || !autoLogAppEventsEnabledLocally.getValue()) return
 
     readSettingFromCache(codelessSetupEnabled)
     val currTime = System.currentTimeMillis()
@@ -132,9 +132,9 @@ internal object UserSettingsManager {
     }
     // fetch data through Graph request if cache is unavailable
     FacebookSdk.getExecutor().execute {
-      if (advertiserIDCollectionEnabled.getValue()) {
+      if (TrackingConsent.isEnabled() && autoLogAppEventsEnabledLocally.getValue() && advertiserIDCollectionEnabled.getValue()) {
         val appSettings = queryAppSettings(FacebookSdk.getApplicationId(), false)
-        if (appSettings != null && appSettings.codelessEventsEnabled) {
+        if (appSettings != null && appSettings.codelessEventsEnabled && TrackingConsent.isEnabled() && autoLogAppEventsEnabledLocally.getValue()) {
           var advertiserId: String? = null
           val context = FacebookSdk.getApplicationContext()
           val identifiers = getAttributionIdentifiers(context)
@@ -158,7 +158,7 @@ internal object UserSettingsManager {
           }
         }
       }
-      isFetchingCodelessStatus.set(false)
+      TrackingConsent.update(Runnable { isFetchingCodelessStatus.set(false) })
     }
   }
 
@@ -459,7 +459,7 @@ internal object UserSettingsManager {
   }
 
   private class UserSetting(var defaultVal: Boolean, var key: String) {
-    var value: Boolean? = null
+    @Volatile var value: Boolean? = null
     var lastTS: Long = 0
     fun getValue(): Boolean {
       return value ?: defaultVal
