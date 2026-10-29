@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.preference.PreferenceManager
 import android.util.Log
 import com.facebook.FacebookSdk
@@ -22,8 +24,11 @@ internal object AnalyticsUserIDStore {
   private var userID: String? = null
 
   @Volatile private var initialized = false
+  @JvmStatic internal fun clearForConsent() { userID = null; initialized = false }
   @JvmStatic
   fun initStore() {
+    if (!TrackingConsent.isEnabled()) return
+
     if (initialized) {
       return
     }
@@ -32,12 +37,15 @@ internal object AnalyticsUserIDStore {
 
   @JvmStatic
   fun setUserID(id: String?) {
+    if (!TrackingConsent.isEnabled()) return
+
     assertIsNotMainThread()
     if (!initialized) {
       Log.w(TAG, "initStore should have been called before calling setUserID")
       initAndWait()
     }
     getAnalyticsExecutor().execute {
+      TrackingConsent.update(Runnable {
       lock.writeLock().lock()
       try {
         userID = id
@@ -49,11 +57,14 @@ internal object AnalyticsUserIDStore {
       } finally {
         lock.writeLock().unlock()
       }
+      })
     }
   }
 
   @JvmStatic
   fun getUserID(): String? {
+    if (!TrackingConsent.isEnabled()) return null
+
     if (!initialized) {
       Log.w(TAG, "initStore should have been called before calling setUserID")
       initAndWait()
@@ -67,6 +78,11 @@ internal object AnalyticsUserIDStore {
   }
 
   private fun initAndWait() {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
+    if (!TrackingConsent.isEnabled()) return
+
     if (initialized) {
       return
     }
@@ -81,6 +97,8 @@ internal object AnalyticsUserIDStore {
       initialized = true
     } finally {
       lock.writeLock().unlock()
+    }
+
     }
   }
 }

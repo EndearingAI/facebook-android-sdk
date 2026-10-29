@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import com.facebook.LoggingBehavior
 import com.facebook.appevents.AppEventsLogger
@@ -52,7 +54,7 @@ object AppEventsLoggerUtility {
     // whole call in its own try/catch block since some of the things it does might
     // cause unexpected exceptions on rooted/funky devices:
     try {
-      setAppEventExtendedDeviceInfoParameters(publishParams, context)
+      if (com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) setAppEventExtendedDeviceInfoParameters(publishParams, context)
     } catch (e: Exception) {
       // Swallow but log
       log(

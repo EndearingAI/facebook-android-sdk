@@ -18,7 +18,6 @@ buildscript {
   dependencies {
     classpath(libs.android.gradle.plugin)
     classpath(libs.kotlin.gradle.plugin)
-    classpath(libs.dokka.gradle.plugin)
     classpath(libs.jacoco.core)
   }
 }
@@ -32,15 +31,24 @@ allprojects {
   }
 }
 
-// Run unit tests in a JDK 11 JVM. Gradle 8.5 requires JDK 17+ to run, but
-// PowerMock/Robolectric can't handle JDK 17 class files. The toolchain launcher
-// forks test execution into a separate JDK 11 process.
 subprojects {
   tasks.withType<Test>().configureEach {
-    javaLauncher.set(
-      project.extensions.getByType<JavaToolchainService>().launcherFor {
-        languageVersion.set(JavaLanguageVersion.of(11))
-      }
-    )
+    maxParallelForks = 1
+    maxHeapSize = "2048m"
+    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED",
+      "--add-opens=java.base/java.util=ALL-UNNAMED",
+      "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+      "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+      "--add-opens=java.base/java.net=ALL-UNNAMED")
+  }
+  plugins.withId("com.android.library") {
+    extensions.configure<com.android.build.gradle.LibraryExtension> {
+      buildFeatures.buildConfig = true
+      buildFeatures.aidl = true
+    }
+  }
+  afterEvaluate {
+    group = providers.gradleProperty("forkPublicationGroup").getOrElse("com.github.EndearingAI.facebook-android-sdk")
+    version = providers.gradleProperty("forkPublicationVersion").getOrElse("18.3.0-consent-local")
   }
 }

@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.location.Location
@@ -90,6 +92,7 @@ import org.json.JSONObject
  * to extend it will be issued in the background.
  */
 class GraphRequest {
+  internal val consentGeneration = TrackingConsent.capture()
   /** The access token associated with this request. Null if none has been specified. */
   var accessToken: AccessToken?
 
@@ -725,6 +728,13 @@ class GraphRequest {
      */
     @JvmStatic
     fun toHttpConnection(requests: GraphRequestBatch): HttpURLConnection {
+      notEmptyAndContainsNoNulls(requests, "requests")
+      return TrackingConsent.scope(requests.first().consentGeneration) { toHttpConnectionWithConsent(requests) }
+    }
+
+    private fun toHttpConnectionWithConsent(requests: GraphRequestBatch): HttpURLConnection {
+      check(requests.all { TrackingConsent.isCurrent(it.consentGeneration) }) { "Facebook tracking consent changed" }
+      TrackingConsent.requireEnabled()
       validateFieldsParamForGetRequests(requests)
       val url: URL
       url =
@@ -948,7 +958,21 @@ class GraphRequest {
         connection: HttpURLConnection,
         requests: GraphRequestBatch
     ): List<GraphResponse> {
+      notEmptyAndContainsNoNulls(requests, "requests")
+      return try {
+        TrackingConsent.scope(requests.first().consentGeneration) { executeConnectionWithConsent(connection, requests) }
+      } catch (cancelled: java.util.concurrent.CancellationException) {
+        disconnectQuietly(connection)
+        constructErrorResponses(requests.requests, null, FacebookException("Facebook tracking consent changed", cancelled))
+      }
+    }
+
+    private fun executeConnectionWithConsent(connection: HttpURLConnection, requests: GraphRequestBatch): List<GraphResponse> {
       val responses = fromHttpConnection(connection, requests)
+      if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) {
+        disconnectQuietly(connection)
+        return constructErrorResponses(requests.requests, null, FacebookException("Facebook tracking consent changed"))
+      }
       disconnectQuietly(connection)
       val numRequests = requests.size
       if (numRequests != responses.size) {
@@ -1017,6 +1041,7 @@ class GraphRequest {
 
     @JvmStatic
     internal fun runCallbacks(requests: GraphRequestBatch, responses: List<GraphResponse>) {
+      if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) return
       val numRequests = requests.size
 
       // Compile the list of callbacks to call and then run them either on this thread or via the
@@ -1030,6 +1055,7 @@ class GraphRequest {
       }
       if (callbacks.size > 0) {
         val runnable = Runnable {
+        if (requests.any { !TrackingConsent.isCurrent(it.consentGeneration) }) return@Runnable
           for (pair in callbacks) {
             pair.first.onCompleted(pair.second)
           }
@@ -1040,8 +1066,9 @@ class GraphRequest {
         }
         val callbackHandler = requests.callbackHandler
         // Post to the handler.
-        callbackHandler?.post(runnable) ?: // Run on this thread.
-        runnable.run()
+        val scoped = TrackingConsent.wrap(requests.first().consentGeneration, runnable)
+        callbackHandler?.post(scoped) ?: // Run on this thread.
+        scoped.run()
       }
     }
 
@@ -1051,7 +1078,7 @@ class GraphRequest {
 
     @Throws(IOException::class)
     private fun createConnection(url: URL): HttpURLConnection {
-      val connection = url.openConnection() as HttpURLConnection
+      val connection = TrackingConsent.openConnection(url)
       connection.setRequestProperty(USER_AGENT_HEADER, userAgent)
       connection.setRequestProperty(ACCEPT_LANGUAGE_HEADER, Locale.getDefault().toString())
       connection.setChunkedStreamingMode(0)

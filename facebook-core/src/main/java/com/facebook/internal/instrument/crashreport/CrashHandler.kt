@@ -9,6 +9,7 @@
 package com.facebook.internal.instrument.crashreport
 
 import android.util.Log
+import com.facebook.internal.TrackingConsent
 import androidx.annotation.RestrictTo
 import com.facebook.FacebookSdk
 import com.facebook.internal.Utility.isDataProcessingRestricted
@@ -23,8 +24,9 @@ import org.json.JSONException
 class CrashHandler
 private constructor(private val previousHandler: Thread.UncaughtExceptionHandler?) :
     Thread.UncaughtExceptionHandler {
+  private val consentGeneration = TrackingConsent.capture()
   override fun uncaughtException(t: Thread, e: Throwable) {
-    if (InstrumentUtility.isSDKRelatedException(e)) {
+    if (TrackingConsent.isCurrent(consentGeneration) && FacebookSdk.getAutoLogAppEventsEnabled() && InstrumentUtility.isSDKRelatedException(e)) {
       ExceptionAnalyzer.execute(e)
       InstrumentData.Builder.build(e, InstrumentData.Type.CrashReport).save()
     }
@@ -35,10 +37,17 @@ private constructor(private val previousHandler: Thread.UncaughtExceptionHandler
     private val TAG = CrashHandler::class.java.canonicalName
     private const val MAX_CRASH_REPORT_NUM = 5
     private var instance: CrashHandler? = null
+    @JvmStatic internal fun clearForConsent() {
+      instance?.let { handler ->
+        if (Thread.getDefaultUncaughtExceptionHandler() === handler) Thread.setDefaultUncaughtExceptionHandler(handler.previousHandler)
+      }
+      instance = null
+    }
 
     @JvmStatic
     @Synchronized
     fun enable() {
+      if (!TrackingConsent.isEnabled() || !FacebookSdk.getAutoLogAppEventsEnabled()) return
       if (FacebookSdk.getAutoLogAppEventsEnabled()) {
         sendExceptionReports()
       }

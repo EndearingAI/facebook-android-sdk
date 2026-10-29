@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -57,6 +59,7 @@ class AttributionIdentifiers {
     }
 
   companion object {
+    @JvmStatic internal fun clearForConsent() { cachedIdentifiers = null }
     private val TAG = AttributionIdentifiers::class.java.canonicalName
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     internal const val ATTRIBUTION_ID_CONTENT_PROVIDER =
@@ -140,7 +143,7 @@ class AttributionIdentifiers {
       if (!isGooglePlayServicesAvailable(context)) {
         return null
       }
-      
+
       val connection = GoogleAdServiceConnection()
       val intent = Intent("com.google.android.gms.ads.identifier.service.START")
       intent.setPackage("com.google.android.gms")
@@ -153,6 +156,7 @@ class AttributionIdentifiers {
       if (isBindServiceSucceed) {
         try {
           val adInfo = GoogleAdInfo(connection.binder)
+          if (!TrackingConsent.isEnabled()) return null
           val identifiers = AttributionIdentifiers()
           identifiers.androidAdvertiserIdValue = adInfo.advertiserId
           identifiers.isTrackingLimited = adInfo.isTrackingLimited
@@ -168,6 +172,17 @@ class AttributionIdentifiers {
 
     @JvmStatic
     fun getAttributionIdentifiers(context: Context): AttributionIdentifiers? {
+      val generation = TrackingConsent.capture()
+      if (generation < 0) return null
+      return try {
+        TrackingConsent.scope(generation) {
+          val result = if (FacebookSdk.getAdvertiserIDCollectionEnabled()) getAttributionIdentifiersWithConsent(context) else AttributionIdentifiers()
+          if (TrackingConsent.isCurrent(generation)) result else null
+        }
+      } catch (cancelled: java.util.concurrent.CancellationException) { null }
+    }
+
+    private fun getAttributionIdentifiersWithConsent(context: Context): AttributionIdentifiers? {
       val identifiers = getAndroidId(context)
       var c: Cursor? = null
       try {
@@ -235,7 +250,7 @@ class AttributionIdentifiers {
         identifiers: AttributionIdentifiers
     ): AttributionIdentifiers {
       identifiers.fetchTime = System.currentTimeMillis()
-      cachedIdentifiers = identifiers
+      TrackingConsent.update(Runnable { cachedIdentifiers = identifiers })
       return identifiers
     }
 
@@ -264,7 +279,7 @@ class AttributionIdentifiers {
     val binder: IBinder
       get() {
         check(consumed.compareAndSet(false, true)) { "Binder already consumed" }
-        return queue.take()
+        return queue.poll(2, java.util.concurrent.TimeUnit.SECONDS) ?: throw FacebookException("Advertising identifier service timed out")
       }
   }
 

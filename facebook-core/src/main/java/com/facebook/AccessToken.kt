@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
@@ -415,6 +417,8 @@ class AccessToken : Parcelable {
      */
     @JvmStatic
     fun getCurrentAccessToken(): AccessToken? {
+    if (!TrackingConsent.isEnabled()) return null
+
       return AccessTokenManager.getInstance().currentAccessToken
     }
     /**

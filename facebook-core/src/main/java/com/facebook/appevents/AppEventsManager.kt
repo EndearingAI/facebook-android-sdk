@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import androidx.annotation.RestrictTo
 import com.facebook.UserSettingsManager
 import com.facebook.appevents.aam.MetadataIndexer
@@ -46,6 +48,8 @@ object AppEventsManager {
      */
     @JvmStatic
     fun start() {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
         getAppSettingsAsync(
             object : FetchedAppSettingsManager.FetchedAppSettingsCallback {
                 override fun onSuccess(fetchedAppSettings: FetchedAppSettings?) {

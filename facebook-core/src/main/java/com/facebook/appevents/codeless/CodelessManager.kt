@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.codeless
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import android.content.Context
 import android.hardware.Sensor
@@ -36,6 +38,18 @@ import org.json.JSONArray
 @AutoHandleExceptions
 @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
 object CodelessManager {
+  @JvmStatic internal fun clearForConsent() {
+    isCodelessEnabled.set(false)
+    sensorManager?.unregisterListener(viewIndexingTrigger)
+    viewIndexingTrigger.setOnShakeListener(null)
+    viewIndexer?.unschedule()
+    viewIndexer = null
+    sensorManager = null
+    deviceSessionID = null
+    isAppIndexingEnabled.set(false)
+    isCheckingSession = false
+    CodelessMatcher.clearForConsent()
+  }
   private val viewIndexingTrigger = ViewIndexingTrigger()
   private var sensorManager: SensorManager? = null
   private var viewIndexer: ViewIndexer? = null
@@ -46,6 +60,8 @@ object CodelessManager {
   @Volatile private var isCheckingSession = false
   @JvmStatic
   fun onActivityResumed(activity: Activity) {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     if (!isCodelessEnabled.get()) {
       return
     }
@@ -97,6 +113,8 @@ object CodelessManager {
 
   @JvmStatic
   fun enable() {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     isCodelessEnabled.set(true)
   }
 
@@ -154,6 +172,7 @@ object CodelessManager {
 
   @JvmStatic
   internal fun getCurrentDeviceSessionID(): String {
+    TrackingConsent.requireEnabled()
     if (null == deviceSessionID) {
       deviceSessionID = UUID.randomUUID().toString()
     }

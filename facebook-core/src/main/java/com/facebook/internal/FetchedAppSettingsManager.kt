@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.os.Bundle
 import android.os.Handler
@@ -113,6 +115,13 @@ object FetchedAppSettingsManager {
     @Volatile private var isUnityInit = false
     @Volatile private var unityEventBindings: JSONArray? = null
 
+    @JvmStatic internal fun clearForConsent() {
+        fetchedAppSettings.clear()
+        fetchedAppSettingsCallbacks.clear()
+        loadingState.set(FetchAppSettingState.NOT_LOADED)
+        unityEventBindings = null
+        isUnityInit = false
+    }
     @JvmStatic
     fun loadAppSettingsAsync() {
         val context = FacebookSdk.getApplicationContext()
@@ -160,7 +169,7 @@ object FetchedAppSettingsManager {
             val resultJSON = getAppSettingsQueryResponse(applicationId)
             if (resultJSON != null) {
                 parseAppSettingsFromJSON(applicationId, resultJSON)
-                sharedPrefs.edit().putString(settingsKey, resultJSON.toString()).apply()
+                TrackingConsent.update(Runnable { sharedPrefs.edit().putString(settingsKey, resultJSON.toString()).apply() })
             }
 
             // Print log to notify developers to upgrade SDK when version is too old
@@ -260,7 +269,10 @@ object FetchedAppSettingsManager {
     // main thread. This call can block for long time if network is not available and network
     // timeout is long.
     @JvmStatic
-    fun queryAppSettings(applicationId: String, forceRequery: Boolean): FetchedAppSettings? {
+    fun queryAppSettings(applicationId: String, forceRequery: Boolean): FetchedAppSettings? =
+        TrackingConsent.scope(TrackingConsent.capture()) { queryAppSettingsWithConsent(applicationId, forceRequery) }
+
+    private fun queryAppSettingsWithConsent(applicationId: String, forceRequery: Boolean): FetchedAppSettings? {
         // Cache the last app checked results.
         if (!forceRequery && fetchedAppSettings.containsKey(applicationId)) {
             return fetchedAppSettings[applicationId]
@@ -278,6 +290,9 @@ object FetchedAppSettingsManager {
         applicationId: String,
         settingsJSON: JSONObject
     ): FetchedAppSettings {
+    synchronized(TrackingConsent.lock) {
+      TrackingConsent.requireEnabled()
+
         val errorClassificationJSON =
             settingsJSON.optJSONArray(APP_SETTING_ANDROID_SDK_ERROR_CATEGORIES)
         val errorClassification =
@@ -367,7 +382,9 @@ object FetchedAppSettingsManager {
             )
         fetchedAppSettings[applicationId] = result
         return result
+
     }
+  }
 
     @JvmStatic
     fun setIsUnityInit(flag: Boolean) {

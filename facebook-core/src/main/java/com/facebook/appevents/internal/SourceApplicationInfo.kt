@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import android.preference.PreferenceManager
 import com.facebook.FacebookSdk
@@ -26,12 +28,17 @@ private constructor(val callingApplicationPackage: String?, val isOpenedByAppLin
   }
 
   fun writeSourceApplicationInfoToDisk() {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
     val sharedPreferences =
         PreferenceManager.getDefaultSharedPreferences(FacebookSdk.getApplicationContext())
     val editor = sharedPreferences.edit()
     editor.putString(CALL_APPLICATION_PACKAGE_KEY, callingApplicationPackage)
     editor.putBoolean(OPENED_BY_APP_LINK_KEY, isOpenedByAppLink)
     editor.apply()
+
+    }
   }
 
   object Factory {
@@ -80,6 +87,9 @@ private constructor(val callingApplicationPackage: String?, val isOpenedByAppLin
 
     @JvmStatic
     fun getStoredSourceApplicatioInfo(): SourceApplicationInfo? {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return null
+
       val sharedPreferences =
           PreferenceManager.getDefaultSharedPreferences(FacebookSdk.getApplicationContext())
       if (!sharedPreferences.contains(CALL_APPLICATION_PACKAGE_KEY)) {
@@ -89,7 +99,9 @@ private constructor(val callingApplicationPackage: String?, val isOpenedByAppLin
           sharedPreferences.getString(CALL_APPLICATION_PACKAGE_KEY, null)
       val openedByAppLink = sharedPreferences.getBoolean(OPENED_BY_APP_LINK_KEY, false)
       return SourceApplicationInfo(callingApplicationPackage, openedByAppLink)
+
     }
+  }
 
     @JvmStatic
     fun clearSavedSourceApplicationInfoFromDisk() {

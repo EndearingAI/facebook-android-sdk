@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Application
 import android.os.Bundle
 import android.util.Log
@@ -69,6 +71,8 @@ object AutomaticAnalyticsLogger {
 
     @JvmStatic
     fun logActivityTimeSpentEvent(activityName: String?, timeSpentInSeconds: Long) {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
         val context = FacebookSdk.getApplicationContext()
         val appId = FacebookSdk.getApplicationId()
         val settings = queryAppSettings(appId, false)
@@ -92,6 +96,8 @@ object AutomaticAnalyticsLogger {
         billingClientVersion: InAppPurchaseUtils.BillingClientVersion?,
         isFirstAppLaunch: Boolean = false
     ) {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
         if (!isImplicitPurchaseLoggingEnabled()) {
             return
         }

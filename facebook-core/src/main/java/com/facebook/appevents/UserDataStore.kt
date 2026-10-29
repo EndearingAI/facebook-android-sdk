@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.preference.PreferenceManager
@@ -38,6 +40,11 @@ object UserDataStore {
   private val externalHashedUserData = ConcurrentHashMap<String?, String?>()
   private val internalHashedUserData = ConcurrentHashMap<String?, String?>()
 
+  @JvmStatic internal fun clearForConsent() {
+    externalHashedUserData.clear()
+    internalHashedUserData.clear()
+    initialized.set(false)
+  }
   /** User data types */
   const val EMAIL = "em"
   const val FIRST_NAME = "fn"
@@ -52,6 +59,8 @@ object UserDataStore {
   const val EXTERNAL_ID= "external_id"
   @JvmStatic
   fun initStore() {
+    if (!TrackingConsent.isEnabled()) return
+
     if (initialized.get()) {
       return
     }
@@ -63,12 +72,14 @@ object UserDataStore {
       if (!initialized.get()) {
         initAndWait()
       }
-      sharedPreferences.edit().putString(key, value).apply()
+      TrackingConsent.update(Runnable { sharedPreferences.edit().putString(key, value).apply() })
     }
   }
 
   @JvmStatic
   fun setUserDataAndHash(ud: Bundle?) {
+    if (!TrackingConsent.isEnabled()) return
+
     getAnalyticsExecutor().execute {
       if (!initialized.get()) {
         Log.w(TAG, "initStore should have been called before calling setUserData")
@@ -94,6 +105,8 @@ object UserDataStore {
       country: String?,
       externalId: String? = null
   ) {
+    if (!TrackingConsent.isEnabled()) return
+
     val ud = Bundle()
     if (email != null) {
       ud.putString(EMAIL, email)
@@ -145,6 +158,8 @@ object UserDataStore {
 
   @JvmStatic
   internal fun getHashedUserData(): String {
+    if (!TrackingConsent.isEnabled()) return ""
+
     if (!initialized.get()) {
       Log.w(TAG, "initStore should have been called before calling setUserID")
       initAndWait()
@@ -154,6 +169,8 @@ object UserDataStore {
 
   @JvmStatic
   fun getAllHashedUserData(): String {
+    if (!TrackingConsent.isEnabled()) return ""
+
     if (!initialized.get()) {
       initAndWait()
     }
@@ -177,6 +194,11 @@ object UserDataStore {
 
   @Synchronized
   private fun initAndWait() {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
+    if (!TrackingConsent.isEnabled()) return
+
     if (initialized.get()) {
       return
     }
@@ -187,9 +209,14 @@ object UserDataStore {
     externalHashedUserData.putAll(jsonStrToMap(externalUdRaw))
     internalHashedUserData.putAll(jsonStrToMap(internalUdRaw))
     initialized.set(true)
+
+    }
   }
 
   private fun updateHashUserData(ud: Bundle?) {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
     if (ud == null) {
       return
     }
@@ -204,6 +231,8 @@ object UserDataStore {
           externalHashedUserData[key] = encryptedValue
         }
       }
+    }
+
     }
   }
 

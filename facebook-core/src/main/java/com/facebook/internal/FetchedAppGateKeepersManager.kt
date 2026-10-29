@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.os.Bundle
 import android.os.Handler
@@ -54,6 +56,13 @@ object FetchedAppGateKeepersManager {
     // GateKeeper values in runtime. It may be changed through the UI.
     @Volatile private var gateKeeperRuntimeCache: GateKeeperRuntimeCache? = null
 
+    @JvmStatic internal fun clearForConsent() {
+        fetchedAppGateKeepers.clear()
+        callbacks.clear()
+        isLoading.set(false)
+        timestamp = null
+        gateKeeperRuntimeCache = null
+    }
     @Synchronized
     private fun getGateKeepersForAppId(applicationId: String): JSONObject? {
         return fetchedAppGateKeepers[applicationId]
@@ -61,8 +70,13 @@ object FetchedAppGateKeepersManager {
 
     @Synchronized
     private fun setGateKeepersForAppId(applicationId: String, json: JSONObject) {
+    synchronized(TrackingConsent.lock) {
+      TrackingConsent.requireEnabled()
+
         fetchedAppGateKeepers[applicationId] = json
+
     }
+  }
 
     fun loadAppGateKeepersAsync() {
         loadAppGateKeepersAsync(null)
@@ -128,7 +142,7 @@ object FetchedAppGateKeepersManager {
             val callback = callbacks.poll()
             // callback can be null when function pollCallbacks is called in multiple threads
             if (callback != null) {
-                handler.post { callback.onCompleted() }
+                handler.post(TrackingConsent.wrap(Runnable { callback.onCompleted() }))
             }
         }
     }
@@ -137,7 +151,10 @@ object FetchedAppGateKeepersManager {
     // main thread. This call can block for long time if network is not available and network
     // timeout is long.
     @JvmStatic
-    fun queryAppGateKeepers(applicationId: String, forceRequery: Boolean): JSONObject {
+    fun queryAppGateKeepers(applicationId: String, forceRequery: Boolean): JSONObject =
+        TrackingConsent.scope(TrackingConsent.capture()) { queryAppGateKeepersWithConsent(applicationId, forceRequery) }
+
+    private fun queryAppGateKeepersWithConsent(applicationId: String, forceRequery: Boolean): JSONObject {
         if (!forceRequery) {
             val cached = getGateKeepersForAppId(applicationId)
             if (cached != null) {
@@ -149,7 +166,7 @@ object FetchedAppGateKeepersManager {
         val gateKeepersKey = String.format(APP_GATEKEEPERS_PREFS_KEY_FORMAT, applicationId)
         val gateKeepersSharedPrefs =
             context.getSharedPreferences(APP_GATEKEEPERS_PREFS_STORE, Context.MODE_PRIVATE)
-        gateKeepersSharedPrefs.edit().putString(gateKeepersKey, response.toString()).apply()
+        TrackingConsent.update(Runnable { gateKeepersSharedPrefs.edit().putString(gateKeepersKey, response.toString()).apply() })
         return parseAppGateKeepersFromJSON(applicationId, response)
     }
 

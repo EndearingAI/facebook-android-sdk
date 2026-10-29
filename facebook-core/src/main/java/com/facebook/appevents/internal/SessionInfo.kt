@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.preference.PreferenceManager
 import com.facebook.FacebookSdk
 import java.util.UUID
@@ -37,6 +39,9 @@ constructor(
 
   /** Performs disk IO. Do not call from main thread */
   fun writeSessionToDisk() {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
     val sharedPreferences =
         PreferenceManager.getDefaultSharedPreferences(FacebookSdk.getApplicationContext())
     val editor = sharedPreferences.edit()
@@ -47,6 +52,8 @@ constructor(
     editor.apply()
     if (sourceApplicationInfo != null) {
       sourceApplicationInfo?.writeSourceApplicationInfoToDisk()
+    }
+
     }
   }
 
@@ -66,6 +73,9 @@ constructor(
      */
     @JvmStatic
     fun getStoredSessionInfo(): SessionInfo? {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return null
+
       val sharedPreferences =
           PreferenceManager.getDefaultSharedPreferences(FacebookSdk.getApplicationContext())
       val startTime = sharedPreferences.getLong(LAST_SESSION_INFO_START_KEY, 0)
@@ -80,7 +90,9 @@ constructor(
       sessionInfo.diskRestoreTime = System.currentTimeMillis()
       sessionInfo.sessionId = UUID.fromString(sessionIDStr)
       return sessionInfo
+
     }
+  }
 
     @JvmStatic
     fun clearSavedSessionFromDisk() {

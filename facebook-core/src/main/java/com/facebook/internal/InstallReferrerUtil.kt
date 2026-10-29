@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.os.RemoteException
 import com.android.installreferrer.api.InstallReferrerClient
@@ -20,11 +22,19 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 object InstallReferrerUtil {
+  private class Pending(val client: InstallReferrerClient, val latch: CountDownLatch?)
+  private val pending = java.util.concurrent.CopyOnWriteArraySet<Pending>()
+  @JvmStatic internal fun clearForConsent() {
+    pending.forEach { it.latch?.countDown(); it.client.endConnection() }
+    pending.clear()
+  }
   private const val IS_REFERRER_UPDATED = "is_referrer_updated"
   private const val REFERRER_FETCH_TIMEOUT = 5L
 
   @JvmStatic
   fun tryUpdateReferrerInfo(callback: Callback) {
+    if (!TrackingConsent.isEnabled()) return
+
     if (!isUpdated) {
       tryConnectReferrerInfo(callback)
     }
@@ -32,6 +42,8 @@ object InstallReferrerUtil {
 
   @JvmStatic
   fun tryUpdateReferrerInfoBlocking(callback: Callback) {
+    if (!TrackingConsent.isEnabled()) return
+
     if (!isUpdated) {
       val latch = CountDownLatch(1)
       tryConnectReferrerInfo(callback, latch)
@@ -42,13 +54,21 @@ object InstallReferrerUtil {
   }
 
   private fun tryConnectReferrerInfo(callback: Callback, latch: CountDownLatch? = null) {
+    if (!TrackingConsent.isEnabled()) return
+
     val referrerClient =
         InstallReferrerClient.newBuilder(FacebookSdk.getApplicationContext()).build()
+    val generation = TrackingConsent.capture()
+    val request = Pending(referrerClient, latch)
+    pending.add(request)
     val installReferrerStateListener =
         object : InstallReferrerStateListener {
           @AutoHandleExceptions
           override fun onInstallReferrerSetupFinished(responseCode: Int) {
             try {
+              if (!TrackingConsent.isCurrent(generation)) { referrerClient.endConnection(); return }
+              synchronized(TrackingConsent.lock) {
+              if (!TrackingConsent.isCurrent(generation)) return
               when (responseCode) {
                 InstallReferrerResponse.OK -> {
                   val response: ReferrerDetails =
@@ -74,7 +94,9 @@ object InstallReferrerUtil {
               } catch (e: Exception) {
                 // Silent endConnection errors for unit test and else
               }
+              }
             } finally {
+              pending.remove(request)
               latch?.countDown()
             }
           }
@@ -84,7 +106,10 @@ object InstallReferrerUtil {
           }
         }
     try {
-      referrerClient.startConnection(installReferrerStateListener)
+      synchronized(TrackingConsent.lock) {
+        if (!TrackingConsent.isCurrent(generation)) { pending.remove(request); latch?.countDown(); return }
+        referrerClient.startConnection(installReferrerStateListener)
+      }
     } catch (e: Exception) {
       latch?.countDown()
       return

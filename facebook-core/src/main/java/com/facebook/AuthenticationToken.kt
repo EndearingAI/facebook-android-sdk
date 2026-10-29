@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.os.Parcel
 import android.os.Parcelable
 import com.facebook.internal.Validate
@@ -182,6 +184,8 @@ class AuthenticationToken : Parcelable {
      */
     @JvmStatic
     fun getCurrentAuthenticationToken(): AuthenticationToken? {
+    if (!TrackingConsent.isEnabled()) return null
+
       return AuthenticationTokenManager.getInstance().currentAuthenticationToken
     }
 

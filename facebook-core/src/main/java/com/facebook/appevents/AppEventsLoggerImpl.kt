@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Application
 import android.content.Context
 import android.os.Build
@@ -327,6 +329,7 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
         currentSessionId: UUID?,
         operationalData: OperationalData? = null
     ) {
+        if (!TrackingConsent.isCurrent(consentGeneration)) return
         if (eventName.isNullOrEmpty()) {
             return
         }
@@ -437,6 +440,8 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
         }
     }
 
+    private val consentGeneration = TrackingConsent.capture()
+
     companion object {
         // Constants
         private val TAG =
@@ -480,6 +485,9 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
 
         @JvmStatic
         fun setPushNotificationsRegistrationId(registrationId: String?) {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
             synchronized(staticLock) {
                 if (!stringsEqualOrEmpty(pushNotificationsRegistrationIdField, registrationId)) {
                     pushNotificationsRegistrationIdField = registrationId
@@ -492,6 +500,16 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
                     }
                 }
             }
+
+    }
+  }
+
+        @JvmStatic internal fun clearForConsent() {
+            backgroundExecutor?.shutdownNow()
+            backgroundExecutor = null
+            anonymousAppDeviceGUID = null
+            pushNotificationsRegistrationIdField = null
+            isActivateAppEventRequested = false
         }
 
         private const val APP_EVENT_PREFERENCES = "com.facebook.sdk.appEventPreferences"
@@ -499,6 +517,8 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
 
         @JvmStatic
         fun activateApp(application: Application, applicationId: String?) {
+    if (!TrackingConsent.isEnabled()) return
+
             var applicationId = applicationId
             if (!FacebookSdk.isInitialized()) {
                 throw FacebookException(
@@ -518,7 +538,9 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
 
             // Will do nothing in case AutoLogAppEventsEnabled is true, as we already started the
             // tracking as part of sdkInitialize() flow
+            val wasTracking = com.facebook.appevents.internal.ActivityLifecycleTracker.isTracking()
             startTracking(application, applicationId)
+            if (!wasTracking) com.facebook.appevents.internal.SessionLogger.logActivateApp("App", null, applicationId, application)
 
             if (isEnabled(FeatureManager.Feature.GPSPACAProcessing)) {
                 PACustomAudienceClient.joinCustomAudience(applicationId, "fb_mobile_app_install")
@@ -683,6 +705,8 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
         // Should not be a problem as subsequent calls will have the data if it exists.
         @JvmStatic
         fun getInstallReferrer(): String? {
+    if (!TrackingConsent.isEnabled()) return null
+
             tryUpdateReferrerInfo(installReferrerCallback)
             return readInstallReferrerFromPrefs()
         }
@@ -691,6 +715,8 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
         // fetching the referrer.
         @JvmStatic
         fun getInstallReferrerBlocking(): String? {
+    if (!TrackingConsent.isEnabled()) return null
+
             tryUpdateReferrerInfoBlocking(installReferrerCallback)
             return readInstallReferrerFromPrefs()
         }
@@ -706,12 +732,17 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
 
         @JvmStatic
         fun setInstallReferrer(referrer: String?) {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
             val ctx = FacebookSdk.getApplicationContext()
             val preferences = ctx.getSharedPreferences(APP_EVENT_PREFERENCES, Context.MODE_PRIVATE)
             if (referrer != null) {
                 preferences.edit().putString("install_referrer", referrer).apply()
             }
-        }
+
+    }
+  }
 
         @JvmStatic
         fun augmentWebView(webView: WebView, context: Context?) {
@@ -736,6 +767,8 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
         }
 
         private fun initializeTimersIfNeeded() {
+    if (!TrackingConsent.isEnabled()) return
+
             synchronized(staticLock) {
                 if (backgroundExecutor != null) {
                     return
@@ -743,7 +776,7 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
                 // Having single runner thread enforces ordered execution of tasks,
                 // which matters in some cases e.g. making sure user id is set before
                 // trying to update user properties for a given id
-                backgroundExecutor = ScheduledThreadPoolExecutor(1)
+                backgroundExecutor = com.facebook.internal.ConsentScheduledExecutor(1)
             }
             val attributionRecheckRunnable = Runnable {
                 val applicationIds: MutableSet<String> = HashSet()
@@ -754,7 +787,7 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
                     queryAppSettings(applicationId, true)
                 }
             }
-            checkNotNull(backgroundExecutor)
+            if (FacebookSdk.getAutoLogAppEventsEnabled()) checkNotNull(backgroundExecutor)
                 .scheduleAtFixedRate(
                     attributionRecheckRunnable,
                     0,
@@ -813,11 +846,15 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
             if (backgroundExecutor == null) {
                 initializeTimersIfNeeded()
             }
-            return checkNotNull(backgroundExecutor)
+            return java.util.concurrent.Executor { work ->
+                if (TrackingConsent.isEnabled()) checkNotNull(backgroundExecutor).execute(TrackingConsent.wrap(work))
+            }
         }
 
         @JvmStatic
         fun getAnonymousAppDeviceGUID(context: Context): String {
+            synchronized(TrackingConsent.lock) {
+            if (!TrackingConsent.isEnabled()) return ""
             if (anonymousAppDeviceGUID == null) {
                 synchronized(staticLock) {
                     if (anonymousAppDeviceGUID == null) {
@@ -841,6 +878,7 @@ internal constructor(activityName: String, applicationId: String?, accessToken: 
                 }
             }
             return checkNotNull(anonymousAppDeviceGUID)
+            }
         }
     }
 

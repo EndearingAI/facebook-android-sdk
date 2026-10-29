@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 object ANRDetector {
   private const val DETECTION_INTERVAL_IN_MS = 500
   private val myUid = Process.myUid() // the identity of its app-specific sandbox.
-  private val scheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+  private val scheduledExecutorService = com.facebook.internal.ConsentScheduledExecutor(1)
   private var previousStackTrace: String? = ""
   private val anrDetectorRunnable = Runnable {
     try {

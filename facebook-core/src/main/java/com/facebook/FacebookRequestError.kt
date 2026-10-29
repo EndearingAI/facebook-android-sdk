@@ -377,6 +377,7 @@ private constructor(
     val errorClassification: FacebookRequestErrorClassification
       @JvmStatic
       get() {
+        if (!FacebookSdk.isInitialized()) return defaultErrorClassification
         val appSettings =
             getAppSettingsWithoutQuery(FacebookSdk.getApplicationId())
                 ?: return defaultErrorClassification

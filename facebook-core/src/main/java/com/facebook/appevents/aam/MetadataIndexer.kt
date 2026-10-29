@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.aam
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import androidx.annotation.RestrictTo
 import androidx.annotation.UiThread
@@ -28,6 +30,8 @@ object MetadataIndexer {
   @UiThread
   @JvmStatic
   fun onActivityResumed(activity: Activity) {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     try {
       if (!enabled || getRules().isEmpty()) {
         return
@@ -44,6 +48,8 @@ object MetadataIndexer {
 
   @JvmStatic
   fun enable() {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     try {
       FacebookSdk.getExecutor().execute {
         val context = FacebookSdk.getApplicationContext()

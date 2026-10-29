@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
@@ -48,8 +50,8 @@ object ActivityLifecycleTracker {
                 "matching activity resume. Logging data may be incorrect. Make sure you call " +
                 "activateApp from your Application's onCreate method"
     private const val INTERRUPTION_THRESHOLD_MILLISECONDS: Long = 1000
-    private val singleThreadExecutor = Executors.newSingleThreadScheduledExecutor()
-    private val iapExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val singleThreadExecutor = com.facebook.internal.ConsentScheduledExecutor(1)
+    private val iapExecutor = com.facebook.internal.ConsentScheduledExecutor(1)
 
     @Volatile
     private var currentFuture: ScheduledFuture<*>? = null
@@ -64,14 +66,33 @@ object ActivityLifecycleTracker {
     private var currentActivityAppearTime: Long = 0
     private var activityReferences = 0
     private var currActivity: WeakReference<Activity>? = null
+    private var registeredApplication: Application? = null
+    private var registeredCallbacks: Application.ActivityLifecycleCallbacks? = null
+    @JvmStatic internal fun clearForConsent() {
+        registeredCallbacks?.let { registeredApplication?.unregisterActivityLifecycleCallbacks(it) }
+        registeredCallbacks = null
+        registeredApplication = null
+        cancelCurrentTask()
+        currentSession = null
+        currActivity = null
+        previousActivityName = null
+        appId = null
+        tracking.set(false)
+        foregroundActivityCount.set(0)
+        activityReferences = 0
+        currentActivityAppearTime = 0
+        CodelessManager.disable()
+    }
     private var previousActivityName: String? = null
 
     @JvmStatic
     fun startTracking(application: Application, appId: String?) {
+    if (!TrackingConsent.isEnabled()) return
+
         if (!tracking.compareAndSet(false, true)) {
             return
         }
-        checkFeature(FeatureManager.Feature.CodelessEvents) { enabled ->
+        if (FacebookSdk.getAutoLogAppEventsEnabled()) checkFeature(FeatureManager.Feature.CodelessEvents) { enabled ->
             if (enabled) {
                 CodelessManager.enable()
             } else {
@@ -79,46 +100,93 @@ object ActivityLifecycleTracker {
             }
         }
         ActivityLifecycleTracker.appId = appId
-        application.registerActivityLifecycleCallbacks(
-            object : Application.ActivityLifecycleCallbacks {
+        val generation = TrackingConsent.capture()
+        val callbacks = object : Application.ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+    if (!TrackingConsent.isEnabled()) return
+
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityCreated")
                     assertIsMainThread()
                     onActivityCreated(activity)
+
+                    }
                 }
 
                 override fun onActivityStarted(activity: Activity) {
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     activityReferences++
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityStarted")
+
+                    }
                 }
 
                 override fun onActivityResumed(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityResumed")
                     assertIsMainThread()
                     ActivityLifecycleTracker.onActivityResumed(activity)
+
+                    }
                 }
 
                 override fun onActivityPaused(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityPaused")
                     assertIsMainThread()
                     ActivityLifecycleTracker.onActivityPaused(activity)
+
+                    }
                 }
 
                 override fun onActivityStopped(activity: Activity) {
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityStopped")
                     AppEventsLogger.onContextStop()
                     activityReferences--
+
+                    }
                 }
 
                 override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivitySaveInstanceState")
+
+                    }
                 }
 
                 override fun onActivityDestroyed(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
+                    synchronized(TrackingConsent.lock) {
+                        if (!TrackingConsent.isCurrent(generation)) return
+
                     log(LoggingBehavior.APP_EVENTS, TAG, "onActivityDestroyed")
                     ActivityLifecycleTracker.onActivityDestroyed(activity)
+
+                    }
                 }
-            })
+            }
+        registeredApplication = application
+        registeredCallbacks = callbacks
+        application.registerActivityLifecycleCallbacks(callbacks)
+        currentSession = SessionInfo(System.currentTimeMillis(), null)
     }
 
     @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
@@ -134,22 +202,26 @@ object ActivityLifecycleTracker {
 
     @JvmStatic
     fun getCurrentSessionGuid(): UUID? {
+    if (!TrackingConsent.isEnabled()) return null
+
         return if (currentSession != null) currentSession?.sessionId else null
     }
 
     // Public in order to allow unity sdk to correctly log app events
     @JvmStatic
     fun onActivityCreated(activity: Activity?) {
+    if (!TrackingConsent.isEnabled()) return
+
         singleThreadExecutor.execute {
-            if (currentSession == null) {
-                currentSession = getStoredSessionInfo()
-            }
+            TrackingConsent.update(Runnable { if (currentSession == null) currentSession = getStoredSessionInfo() })
         }
     }
 
     // Public in order to allow unity sdk to correctly log app events
     @JvmStatic
     fun onActivityResumed(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
         currActivity = WeakReference(activity)
         foregroundActivityCount.incrementAndGet()
         cancelCurrentTask()
@@ -164,6 +236,9 @@ object ActivityLifecycleTracker {
         }
         val appContext = activity.applicationContext
         val handleActivityResume = Runnable {
+            synchronized(TrackingConsent.lock) {
+                if (!TrackingConsent.isEnabled()) return@Runnable
+
             val lastEventTime = currentSession?.sessionLastEventTime
             if (currentSession == null) {
                 currentSession = SessionInfo(currentTime, null)
@@ -182,12 +257,16 @@ object ActivityLifecycleTracker {
             }
             currentSession?.sessionLastEventTime = currentTime
             currentSession?.writeSessionToDisk()
+
+            }
         }
         singleThreadExecutor.execute(handleActivityResume)
         previousActivityName = activityName
     }
 
     private fun onActivityPaused(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
         val count = foregroundActivityCount.decrementAndGet()
         if (count < 0) {
             // Our ref count can be off if a developer doesn't call activate
@@ -200,6 +279,9 @@ object ActivityLifecycleTracker {
         val activityName = getActivityName(activity)
         CodelessManager.onActivityPaused(activity)
         val handleActivityPaused = Runnable {
+            synchronized(TrackingConsent.lock) {
+                if (!TrackingConsent.isEnabled()) return@Runnable
+
             if (currentSession == null) {
                 // This can happen if a developer doesn't call activate
                 // app from the Application's onCreate method
@@ -211,6 +293,9 @@ object ActivityLifecycleTracker {
                 // activities in our set time. This indicates that the app has
                 // been backgrounded
                 val task = Runnable {
+            synchronized(TrackingConsent.lock) {
+                if (!TrackingConsent.isEnabled()) return@Runnable
+
                     if (currentSession == null) {
                         currentSession = SessionInfo(currentTime, null)
                     }
@@ -220,7 +305,9 @@ object ActivityLifecycleTracker {
                         currentSession = null
                     }
                     synchronized(currentFutureLock) { currentFuture = null }
-                }
+
+            }
+        }
                 synchronized(currentFutureLock) {
                     currentFuture =
                         singleThreadExecutor.schedule(
@@ -236,11 +323,15 @@ object ActivityLifecycleTracker {
                 timeSpentOnActivityInSeconds
             )
             currentSession?.writeSessionToDisk()
+
+            }
         }
         singleThreadExecutor.execute(handleActivityPaused)
     }
 
     private fun onActivityDestroyed(activity: Activity) {
+    if (!TrackingConsent.isEnabled()) return
+
         CodelessManager.onActivityDestroyed(activity)
     }
 
@@ -263,6 +354,8 @@ object ActivityLifecycleTracker {
 
     @JvmStatic
     fun getCurrentActivity(): Activity? {
+    if (!TrackingConsent.isEnabled()) return null
+
         return if (currActivity != null) currActivity?.get() else null
     }
 }

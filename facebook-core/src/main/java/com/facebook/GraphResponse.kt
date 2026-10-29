@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.util.Log
 import com.facebook.internal.FacebookRequestErrorClassification
 import com.facebook.internal.Logger
@@ -177,11 +179,13 @@ internal constructor(
     @SuppressWarnings("resource")
     @JvmStatic
     internal fun fromHttpConnection(
-        connection: HttpURLConnection,
+        sourceConnection: HttpURLConnection,
         requests: GraphRequestBatch
     ): List<GraphResponse> {
       var stream: InputStream? = null
+      var connection = sourceConnection
       return try {
+        connection = TrackingConsent.adopt(sourceConnection, requests.first().consentGeneration)
         if (!FacebookSdk.isFullyInitialized()) {
           val msg = "GraphRequest can't be used when Facebook SDK isn't fully initialized"
           Log.e(TAG, msg)

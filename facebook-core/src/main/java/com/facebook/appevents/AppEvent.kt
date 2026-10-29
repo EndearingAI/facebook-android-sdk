@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.os.Bundle
 import androidx.annotation.RestrictTo
 import com.facebook.FacebookException
@@ -28,6 +30,7 @@ import java.util.UUID
 
 @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
 class AppEvent : Serializable {
+    @Transient internal val consentGeneration = TrackingConsent.capture()
     val jsonObject: JSONObject
     val operationalJsonObject: JSONObject
     val isImplicit: Boolean

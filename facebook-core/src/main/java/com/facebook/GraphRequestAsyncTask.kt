@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.os.AsyncTask
 import android.os.Handler
 import android.os.HandlerThread
@@ -32,6 +34,7 @@ open class GraphRequestAsyncTask
  */
 (private val connection: HttpURLConnection?, val requests: GraphRequestBatch) :
     AsyncTask<Void, Void, List<GraphResponse>>() {
+  private val consentGeneration = TrackingConsent.capture()
   protected var exception: Exception? = null
     private set
 
@@ -135,10 +138,12 @@ open class GraphRequestAsyncTask
   @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
   public override fun doInBackground(vararg params: Void): List<GraphResponse>? {
     return try {
+      TrackingConsent.scope(consentGeneration) {
       if (connection == null) {
         requests.executeAndWait()
       } else {
         GraphRequest.executeConnectionAndWait(connection, requests)
+      }
       }
     } catch (e: Exception) {
       exception = e

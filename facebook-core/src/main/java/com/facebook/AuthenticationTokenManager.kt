@@ -83,6 +83,10 @@ internal constructor(
   }
 
   companion object {
+    @JvmStatic internal fun clearForConsent() {
+      instanceField?.currentAuthenticationTokenField = null
+    }
+
     const val TAG = "AuthenticationTokenManager"
     const val ACTION_CURRENT_AUTHENTICATION_TOKEN_CHANGED =
         "com.facebook.sdk.ACTION_CURRENT_AUTHENTICATION_TOKEN_CHANGED"

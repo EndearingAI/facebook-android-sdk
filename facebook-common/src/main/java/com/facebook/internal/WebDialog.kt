@@ -22,6 +22,8 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.AsyncTask
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.KeyEvent
@@ -32,6 +34,9 @@ import android.view.WindowManager
 import android.webkit.SslErrorHandler
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -86,6 +91,20 @@ import org.json.JSONArray
  */
 open class WebDialog : Dialog {
   private var url: String? = null
+  private val consentGeneration = TrackingConsent.capture()
+  private val consentRevoked = Runnable {
+    Handler(Looper.getMainLooper()).post { cancelForConsent() }
+  }
+  private fun cancelForConsent() {
+    uploadTask?.cancel(true)
+    url = null
+    webView?.let { it.stopLoading(); it.clearHistory(); it.clearCache(true); it.destroy() }
+    webView = null
+    sendErrorToListener(FacebookOperationCanceledException("Facebook tracking consent changed"))
+    dismiss()
+  }
+  private fun deniedResource(): WebResourceResponse =
+    WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
   private var expectedRedirectUrl = ServerProtocol.DIALOG_REDIRECT_URI
   /**
    * Gets the listener which will be notified when the dialog finishes.
@@ -213,6 +232,7 @@ open class WebDialog : Dialog {
   }
 
   override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+    if (!TrackingConsent.isCurrent(consentGeneration)) { cancelForConsent(); return true }
     if (keyCode == KeyEvent.KEYCODE_BACK) {
       if (webView != null && webView?.canGoBack() == true) {
         webView?.goBack()
@@ -225,6 +245,7 @@ open class WebDialog : Dialog {
   }
 
   override fun dismiss() {
+    TrackingConsent.unregisterRevocationCallback(consentRevoked)
     webView?.let { it.stopLoading() }
     if (!isDetached) {
       spinner?.let {
@@ -238,6 +259,10 @@ open class WebDialog : Dialog {
 
   override fun onStart() {
     super.onStart()
+    if (!TrackingConsent.isCurrent(consentGeneration)) {
+      Handler(Looper.getMainLooper()).post { cancelForConsent() }
+      return
+    }
     if (uploadTask != null && uploadTask?.status == AsyncTask.Status.PENDING) {
       uploadTask?.execute()
       spinner?.show()
@@ -281,6 +306,7 @@ open class WebDialog : Dialog {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    if (!TrackingConsent.registerRevocationCallback(consentGeneration, consentRevoked)) return
     spinner = ProgressDialog(context)
     spinner?.requestWindowFeature(Window.FEATURE_NO_TITLE)
     spinner?.setMessage(context.getString(R.string.com_facebook_loading))
@@ -392,6 +418,7 @@ open class WebDialog : Dialog {
   }
 
   protected fun sendSuccessToListener(values: Bundle?) {
+    if (!TrackingConsent.isCurrent(consentGeneration)) { cancelForConsent(); return }
     if (onCompleteListener != null && !isListenerCalled) {
       isListenerCalled = true
       onCompleteListener?.onComplete(values, null)
@@ -433,6 +460,7 @@ open class WebDialog : Dialog {
 
   @SuppressLint("SetJavaScriptEnabled")
   private fun setUpWebView(margin: Int) {
+    if (!TrackingConsent.isCurrent(consentGeneration)) return
     val webViewContainer = LinearLayout(context)
     webView =
         object : WebView(context) {
@@ -451,7 +479,9 @@ open class WebDialog : Dialog {
     webView?.setHorizontalScrollBarEnabled(false)
     webView?.setWebViewClient(DialogWebViewClient())
     webView?.getSettings()?.javaScriptEnabled = true
-    webView?.loadUrl(checkNotNull(url))
+    synchronized(TrackingConsent.lock) {
+      if (TrackingConsent.isCurrent(consentGeneration)) webView?.loadUrl(checkNotNull(url))
+    }
     webView?.setLayoutParams(
         FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -474,7 +504,12 @@ open class WebDialog : Dialog {
   }
 
   private inner class DialogWebViewClient : WebViewClient() {
+    override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? =
+      if (TrackingConsent.isCurrent(consentGeneration)) null else deniedResource()
+    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+      if (TrackingConsent.isCurrent(consentGeneration)) null else deniedResource()
     override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+      if (!TrackingConsent.isCurrent(consentGeneration)) { cancelForConsent(); return true }
       logd(LOG_TAG, "Redirect URL: $url")
       val parsedURL = Uri.parse(url)
       val isPlatformDialogURL =
@@ -548,6 +583,7 @@ open class WebDialog : Dialog {
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+      if (!TrackingConsent.isCurrent(consentGeneration)) { cancelForConsent(); return }
       logd(LOG_TAG, "Webview loading URL: $url")
       super.onPageStarted(view, url, favicon)
       if (!isDetached) {
@@ -556,6 +592,7 @@ open class WebDialog : Dialog {
     }
 
     override fun onPageFinished(view: WebView, url: String) {
+      if (!TrackingConsent.isCurrent(consentGeneration)) { cancelForConsent(); return }
       super.onPageFinished(view, url)
       if (!isDetached) {
         spinner?.dismiss()

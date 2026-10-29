@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -39,13 +41,13 @@ internal object UserSettingsManager {
   private const val APPLICATION_FIELDS = GraphRequest.FIELDS_PARAM
   private val autoInitEnabled = UserSetting(true, FacebookSdk.AUTO_INIT_ENABLED_PROPERTY)
   private val autoLogAppEventsEnabledLocally =
-      UserSetting(true, FacebookSdk.AUTO_LOG_APP_EVENTS_ENABLED_PROPERTY)
+      UserSetting(false, FacebookSdk.AUTO_LOG_APP_EVENTS_ENABLED_PROPERTY)
   private val advertiserIDCollectionEnabled =
-      UserSetting(true, FacebookSdk.ADVERTISER_ID_COLLECTION_ENABLED_PROPERTY)
+      UserSetting(false, FacebookSdk.ADVERTISER_ID_COLLECTION_ENABLED_PROPERTY)
   private val codelessSetupEnabled = UserSetting(false, EVENTS_CODELESS_SETUP_ENABLED)
 
   // Monitor enabled user setting from AndroidManifest
-  private val monitorEnabled = UserSetting(true, FacebookSdk.MONITOR_ENABLED_PROPERTY)
+  private val monitorEnabled = UserSetting(false, FacebookSdk.MONITOR_ENABLED_PROPERTY)
 
   private const val ADD_TO_MESSAGING_CUSTOMER_BASE_FOR_WHATSAPP_KEY =
       "com.facebook.sdk.AddToMessagingCustomerBaseForWhatsApp"
@@ -75,6 +77,11 @@ internal object UserSettingsManager {
   private const val AUTO_APP_LINK_WARNING =
       "You haven't set the Auto App Link URL scheme: fb<YOUR APP ID> in AndroidManifest"
 
+  @JvmStatic internal fun clearForConsent() {
+    isInitialized.set(false)
+    isFetchingCodelessStatus.set(false)
+    codelessSetupEnabled.value = false
+  }
   private fun initializeIfNotInitialized() {
     if (!FacebookSdk.isInitialized()) {
       return
@@ -110,6 +117,8 @@ internal object UserSettingsManager {
   }
 
   private fun initializeCodelessSetupEnabledAsync() {
+    if (!TrackingConsent.isEnabled() && autoLogAppEventsEnabledLocally.getValue()) return
+
     readSettingFromCache(codelessSetupEnabled)
     val currTime = System.currentTimeMillis()
     if (codelessSetupEnabled.value != null && currTime - codelessSetupEnabled.lastTS < TIMEOUT_7D) {
@@ -153,7 +162,8 @@ internal object UserSettingsManager {
     }
   }
 
-  private fun writeSettingToCache(userSetting: UserSetting) {
+  private fun writeSettingToCache(userSetting: UserSetting) = synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return@synchronized
     validateInitialized()
     try {
       val jsonObject = JSONObject()
@@ -324,13 +334,14 @@ internal object UserSettingsManager {
   }
 
   private fun checkAutoLogAppEventsEnabled(): Boolean {
+    if (!autoLogAppEventsEnabledLocally.getValue()) return false
     val migratedAutoLogValues: Map<String, Boolean>? =
       FetchedAppSettingsManager.getCachedMigratedAutoLogValuesInAppSettings()
 
     if (migratedAutoLogValues.isNullOrEmpty()) {
       return autoLogAppEventsEnabledLocally.getValue()
     }
-    
+
     var migratedAutoLogEnabled : Boolean? = migratedAutoLogValues[FetchedAppSettingsManager.AUTO_LOG_APP_EVENT_ENABLED_FIELD]
     var migratedDefault : Boolean? = migratedAutoLogValues[FetchedAppSettingsManager.AUTO_LOG_APP_EVENTS_DEFAULT_FIELD]
 
