@@ -59,6 +59,10 @@ internal constructor(
   }
 
   companion object {
+    @JvmStatic internal fun clearForConsent() {
+      if (this::instance.isInitialized) instance.currentProfileField = null
+    }
+
     const val ACTION_CURRENT_PROFILE_CHANGED = "com.facebook.sdk.ACTION_CURRENT_PROFILE_CHANGED"
     const val EXTRA_OLD_PROFILE = "com.facebook.sdk.EXTRA_OLD_PROFILE"
     const val EXTRA_NEW_PROFILE = "com.facebook.sdk.EXTRA_NEW_PROFILE"

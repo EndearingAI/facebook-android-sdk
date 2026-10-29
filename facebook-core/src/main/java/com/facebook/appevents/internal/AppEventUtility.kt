@@ -87,7 +87,7 @@ object AppEventUtility {
     val context = FacebookSdk.getApplicationContext()
     return try {
       val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      packageInfo.versionName
+      packageInfo.versionName ?: ""
     } catch (e: PackageManager.NameNotFoundException) {
       ""
     }

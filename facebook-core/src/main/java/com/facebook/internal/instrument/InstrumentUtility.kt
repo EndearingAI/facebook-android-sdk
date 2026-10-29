@@ -8,6 +8,8 @@
 
 package com.facebook.internal.instrument
 
+import com.facebook.internal.TrackingConsent
+
 import androidx.annotation.RestrictTo
 import com.facebook.FacebookSdk
 import com.facebook.GraphRequest
@@ -250,6 +252,8 @@ object InstrumentUtility {
    */
   @JvmStatic
   fun writeFile(filename: String?, content: String?) {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     val reportDir = getInstrumentReportDir()
     if (reportDir == null || filename == null || content == null) {
       return

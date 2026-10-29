@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import androidx.annotation.RestrictTo
 import com.facebook.FacebookSdk
@@ -34,6 +36,16 @@ object FeatureManager {
 
     @JvmStatic
     fun isEnabled(feature: Feature): Boolean {
+        if (!TrackingConsent.isEnabled()) return false
+        if (feature != Feature.Core && feature != Feature.AppEvents && !FacebookSdk.getAutoLogAppEventsEnabled()) {
+            var ancestor = feature
+            while (ancestor != Feature.Unknown && ancestor != Feature.Core) {
+                if (ancestor == Feature.AppEvents || ancestor == Feature.Instrument) return false
+                val parent = ancestor.parent
+                if (parent == ancestor) break
+                ancestor = parent
+            }
+        }
         if (Feature.Unknown == feature) {
             return false
         }

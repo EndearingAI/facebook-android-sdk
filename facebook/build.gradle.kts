@@ -14,7 +14,6 @@ import java.time.Duration
 plugins {
     id("com.android.library")
     id("kotlin-android")
-    id("org.jetbrains.dokka")
 }
 
 group = "com.facebook.android"
@@ -121,22 +120,6 @@ android {
 }
 
 repositories { maven { url = uri("https://oss.sonatype.org/content/repositories/snapshots") } }
-
-tasks.dokkaJavadoc.configure {
-    dokkaSourceSets {
-        named("main").configure {
-            sourceRoots.from(file("../facebook-bolts/src/main"))
-            sourceRoots.from(file("../facebook-core/src/main"))
-            sourceRoots.from(file("../facebook-common/src/main"))
-            sourceRoots.from(file("../facebook-login/src/main"))
-            sourceRoots.from(file("../facebook-share/src/main"))
-            sourceRoots.from(file("../facebook-applinks/src/main"))
-            sourceRoots.from(file("../facebook-messenger/src/main"))
-            sourceRoots.from(file("../facebook-gamingservices/src/main"))
-            includes.from("../facebook-core/src/main/java/com/facebook/internal/package-info.md")
-        }
-    }
-}
 
 apply(from = "${rootDir}/maven.gradle")
 

@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.os.AsyncTask
 import android.os.Handler
 import android.os.HandlerThread
@@ -32,6 +34,11 @@ open class GraphRequestAsyncTask
  */
 (private val connection: HttpURLConnection?, val requests: GraphRequestBatch) :
     AsyncTask<Void, Void, List<GraphResponse>>() {
+  private val consentGeneration = TrackingConsent.capture()
+  private var completion: GraphRequestCompletion? = null
+  private fun completion(): GraphRequestCompletion = synchronized(TrackingConsent.lock) {
+    completion ?: GraphRequestCompletion(requests) { cancel(true) }.also { completion = it }
+  }
   protected var exception: Exception? = null
     private set
 
@@ -119,9 +126,10 @@ open class GraphRequestAsyncTask
           }
       requests.callbackHandler = handler
     }
+    completion()
   }
 
-  override fun onPostExecute(result: List<GraphResponse>) {
+  override fun onPostExecute(result: List<GraphResponse>?) {
     super.onPostExecute(result)
     val exception = this.exception
     if (exception != null) {
@@ -134,14 +142,19 @@ open class GraphRequestAsyncTask
 
   @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
   public override fun doInBackground(vararg params: Void): List<GraphResponse>? {
+    val owner = completion()
     return try {
-      if (connection == null) {
-        requests.executeAndWait()
-      } else {
-        GraphRequest.executeConnectionAndWait(connection, requests)
+      TrackingConsent.scope(consentGeneration) {
+        if (connection == null) GraphRequest.executeBatchAndWait(requests, owner)
+        else GraphRequest.executeConnectionAndWait(connection, requests, owner)
       }
-    } catch (e: Exception) {
-      exception = e
+    } catch (cancelled: java.util.concurrent.CancellationException) {
+      exception = cancelled
+      owner.cancel()
+      owner.cancellationResponses()
+    } catch (error: Exception) {
+      exception = error
+      owner.complete(GraphResponse.constructErrorResponses(requests.requests, null, FacebookException("Facebook Graph request failed", error)))
       null
     }
   }

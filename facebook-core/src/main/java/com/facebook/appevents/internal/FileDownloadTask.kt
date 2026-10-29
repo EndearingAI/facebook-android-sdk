@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.os.AsyncTask
 import androidx.annotation.VisibleForTesting
 import java.io.DataInputStream
@@ -22,21 +24,29 @@ class FileDownloadTask(
     private val onSuccess: Callback
 ) : AsyncTask<String?, Void?, Boolean>() {
 
+  private val consentGeneration = TrackingConsent.capture()
+
   @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
   public override fun doInBackground(vararg args: String?): Boolean {
+    if (!TrackingConsent.isCurrent(consentGeneration)) return false
     try {
+      return TrackingConsent.scope(consentGeneration) {
       val url = URL(uriStr)
-      val conn = url.openConnection()
+      val conn = TrackingConsent.openConnection(url)
       val contentLength = conn.contentLength
-      val stream = DataInputStream(url.openStream())
+      val stream = DataInputStream(conn.inputStream)
       val buffer = ByteArray(contentLength)
       stream.readFully(buffer)
       stream.close()
+      synchronized(TrackingConsent.lock) {
+      if (!TrackingConsent.isCurrent(consentGeneration)) return@scope false
       val fos = DataOutputStream(FileOutputStream(destFile))
       fos.write(buffer)
       fos.flush()
       fos.close()
-      return true
+      }
+      true
+      }
     } catch (e: Exception) {
       /* no op */
     }
@@ -44,7 +54,7 @@ class FileDownloadTask(
   }
 
   override fun onPostExecute(isSuccess: Boolean) {
-    if (isSuccess) {
+    if (isSuccess && TrackingConsent.isCurrent(consentGeneration)) {
       onSuccess.onComplete(destFile)
     }
   }

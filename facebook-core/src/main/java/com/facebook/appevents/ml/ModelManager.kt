@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.ml
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.os.Bundle
 import android.text.TextUtils
@@ -84,6 +86,8 @@ object ModelManager {
 
   @JvmStatic
   fun enable() {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     runOnNonUiThread(
         Runnable {
           try {

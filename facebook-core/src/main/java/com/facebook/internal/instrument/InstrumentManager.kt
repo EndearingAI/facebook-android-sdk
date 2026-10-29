@@ -8,6 +8,8 @@
 
 package com.facebook.internal.instrument
 
+import com.facebook.internal.TrackingConsent
+
 import androidx.annotation.RestrictTo
 import com.facebook.FacebookSdk
 import com.facebook.internal.FeatureManager
@@ -27,6 +29,8 @@ object InstrumentManager {
    */
   @JvmStatic
   fun start() {
+    if (!TrackingConsent.isEnabled() || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
+
     if (!FacebookSdk.getAutoLogAppEventsEnabled()) {
       return
     }

@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.util.Log
 import com.facebook.internal.FacebookRequestErrorClassification
 import com.facebook.internal.Logger
@@ -37,12 +39,27 @@ import org.json.JSONTokener
 class GraphResponse
 internal constructor(
     val request: GraphRequest,
-    val connection: HttpURLConnection?,
-    val rawResponse: String?,
-    private val graphObject: JSONObject?,
-    private val graphObjectArray: JSONArray?,
-    val error: FacebookRequestError?
+    connection: HttpURLConnection?,
+    rawResponse: String?,
+    @Volatile private var graphObject: JSONObject?,
+    @Volatile private var graphObjectArray: JSONArray?,
+    error: FacebookRequestError?
 ) {
+  @Volatile var connection: HttpURLConnection? = connection
+    private set
+  @Volatile var rawResponse: String? = rawResponse
+    private set
+  @Volatile var error: FacebookRequestError? = error
+    private set
+
+  internal fun clearForConsent() {
+    request.clearForConsent()
+    connection = null
+    rawResponse = null
+    graphObject = null
+    graphObjectArray = null
+    error = FacebookRequestError(null, FacebookException("Facebook tracking consent changed"))
+  }
 
   constructor(
       request: GraphRequest,
@@ -82,7 +99,7 @@ internal constructor(
   fun getJSONObject(): JSONObject? = graphObject
 
   /** The response returned for this request, if it's in object form. Otherwise it's null */
-  val jsonObject: JSONObject? = graphObject
+  val jsonObject: JSONObject? get() = graphObject
 
   /**
    * The response returned for this request, if it's in array form.
@@ -93,7 +110,7 @@ internal constructor(
   fun getJSONArray(): JSONArray? = graphObjectArray
 
   /** The response returned for this request, if it's in array form. Otherwise it's null */
-  val jsonArray: JSONArray? = graphObjectArray
+  val jsonArray: JSONArray? get() = graphObjectArray
 
   /**
    * If a Response contains results that contain paging information, returns a new Request that will
@@ -106,6 +123,7 @@ internal constructor(
    */
   fun getRequestForPagedResults(direction: PagingDirection): GraphRequest? {
     var link: String? = null
+    val graphObject = this.graphObject
     if (graphObject != null) {
       val pagingInfo = graphObject.optJSONObject("paging")
       if (pagingInfo != null) {
@@ -177,11 +195,13 @@ internal constructor(
     @SuppressWarnings("resource")
     @JvmStatic
     internal fun fromHttpConnection(
-        connection: HttpURLConnection,
+        sourceConnection: HttpURLConnection,
         requests: GraphRequestBatch
     ): List<GraphResponse> {
       var stream: InputStream? = null
+      var connection = sourceConnection
       return try {
+        connection = TrackingConsent.adopt(sourceConnection, requests.first().consentGeneration)
         if (!FacebookSdk.isFullyInitialized()) {
           val msg = "GraphRequest can't be used when Facebook SDK isn't fully initialized"
           Log.e(TAG, msg)

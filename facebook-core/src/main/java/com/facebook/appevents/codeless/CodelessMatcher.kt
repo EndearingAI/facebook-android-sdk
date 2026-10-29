@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.codeless
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import android.os.Bundle
 import android.os.Handler
@@ -119,12 +121,24 @@ internal class CodelessMatcher private constructor() {
       listenerSet: HashSet<String>,
       activityName: String
   ) : ViewTreeObserver.OnGlobalLayoutListener, ViewTreeObserver.OnScrollChangedListener, Runnable {
+    private val consentGeneration = TrackingConsent.capture()
+    fun detachForConsent() {
+      handler.removeCallbacks(this)
+      rootView.get()?.viewTreeObserver?.let { observer ->
+        if (observer.isAlive) {
+          observer.removeOnGlobalLayoutListener(this)
+          observer.removeOnScrollChangedListener(this)
+        }
+      }
+      eventBindings = null
+    }
     private val rootView: WeakReference<View?> = WeakReference(rootView)
     private var eventBindings: List<EventBinding>? = null
     private val handler: Handler = handler
     private val listenerSet: HashSet<String> = listenerSet
     private val activityName: String = activityName
     override fun run() {
+      if (!TrackingConsent.isCurrent(consentGeneration)) return
       val appId = getApplicationId()
       val appSettings = getAppSettingsWithoutQuery(appId)
       if (appSettings == null || !appSettings.codelessEventsEnabled) {
@@ -151,6 +165,7 @@ internal class CodelessMatcher private constructor() {
     }
 
     private fun startMatch() {
+      if (!TrackingConsent.isCurrent(consentGeneration)) return
       eventBindings?.let {
         if (rootView.get() != null) {
           for (i in it.indices) {
@@ -406,6 +421,17 @@ internal class CodelessMatcher private constructor() {
     private const val CURRENT_CLASS_NAME = "."
     private val TAG = CodelessMatcher::class.java.canonicalName
     private var codelessMatcher: CodelessMatcher? = null
+    @JvmStatic internal fun clearForConsent() {
+      codelessMatcher?.let { matcher ->
+        matcher.uiThreadHandler.removeCallbacksAndMessages(null)
+        matcher.viewMatchers.forEach { it.detachForConsent() }
+        matcher.viewMatchers.clear()
+        matcher.activitiesSet.clear()
+        matcher.activityToListenerMap.clear()
+        matcher.listenerSet.clear()
+      }
+      codelessMatcher = null
+    }
 
     @Synchronized
     @JvmStatic

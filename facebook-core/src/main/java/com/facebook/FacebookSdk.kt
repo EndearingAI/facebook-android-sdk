@@ -26,6 +26,9 @@ import com.facebook.appevents.internal.AppLinkManager
 import com.facebook.appevents.ondeviceprocessing.OnDeviceProcessingManager
 import com.facebook.core.BuildConfig
 import com.facebook.internal.AttributionIdentifiers.Companion.getAttributionIdentifiers
+import com.facebook.internal.TrackingConsent
+import com.facebook.internal.TrackingData
+import com.facebook.internal.SdkInitialization
 import com.facebook.internal.BoltsMeasurementEventListener
 import com.facebook.internal.FeatureManager
 import com.facebook.internal.FetchedAppGateKeepersManager
@@ -64,6 +67,58 @@ object FacebookSdk {
     private val loggingBehaviors = hashSetOf(LoggingBehavior.DEVELOPER_ERRORS)
     private const val DEFAULT_CALLBACK_REQUEST_CODE_OFFSET = 0xface
     private var executor: Executor? = null
+    private var initialization: SdkInitialization? = null
+    private var initializationComplete = false
+    private var trackingDataNeedsClearing = true
+    private var changingConsent = false
+
+    @JvmStatic fun isTrackingEnabled(): Boolean = TrackingConsent.isEnabled()
+    @JvmStatic fun getAnonymousID(): String? = synchronized(TrackingConsent.lock) {
+        if (!isTrackingEnabled() || !sdkInitialized.get()) null
+        else AppEventsLoggerImpl.getAnonymousAppDeviceGUID(getApplicationContext())
+    }
+    @JvmStatic fun setTrackingEnabled(context: Context, enabled: Boolean) {
+        synchronized(TrackingConsent.lock) {
+            if (changingConsent) {
+                check(!enabled) { "Cannot enable Facebook tracking while withdrawal is in progress" }
+                return
+            }
+            applicationContext = context.applicationContext
+            if (enabled) {
+                TrackingConsent.requireGrantable()
+                if (trackingDataNeedsClearing) {
+                    TrackingData.clear(applicationContext)
+                    trackingDataNeedsClearing = false
+                }
+                TrackingConsent.grant()
+            } else {
+                changingConsent = true
+                sdkInitialized.set(false)
+                isFullyInitialized = false
+                initializationComplete = false
+                val cancelled = initialization
+                initialization = null
+                trackingDataNeedsClearing = true
+                val failure = IllegalStateException("Unable to finish Facebook tracking withdrawal; tracking remains disabled")
+                try {
+                    val steps = listOf<() -> Unit>(
+                        { TrackingConsent.revoke() },
+                        { TrackingData.clear(applicationContext); trackingDataNeedsClearing = false },
+                        { cancelled?.cancel() }
+                    )
+                    steps.forEach { step ->
+                        try { step() } catch (error: RuntimeException) { failure.addSuppressed(error) }
+                    }
+                } finally {
+                    sdkInitialized.set(false)
+                    isFullyInitialized = false
+                    initializationComplete = false
+                    changingConsent = false
+                }
+                if (failure.suppressed.isNotEmpty()) throw failure
+            }
+        }
+    }
     @Volatile
     private var applicationId: String? = null
     @Volatile
@@ -183,7 +238,11 @@ object FacebookSdk {
                 executor = AsyncTask.THREAD_POOL_EXECUTOR
             }
         }
-        return checkNotNull(executor)
+        val configured = checkNotNull(executor)
+        return Executor { command ->
+            if (TrackingConsent.isEnabled()) configured.execute(TrackingConsent.wrap(command))
+            else if (command is java.util.concurrent.Future<*>) command.cancel(false)
+        }
     }
 
     /**
@@ -286,7 +345,7 @@ object FacebookSdk {
     @Synchronized
     @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
     @JvmStatic
-    fun isFullyInitialized(): Boolean = isFullyInitialized
+    fun isFullyInitialized(): Boolean = TrackingConsent.isEnabled() && isFullyInitialized
 
     /**
      * Gets the base Facebook domain to use when making Web Requests; in production code this will
@@ -355,7 +414,6 @@ object FacebookSdk {
      * [CALLBACK_OFFSET_PROPERTY].
      */
     @Deprecated("sdkInitialize is called automatically on app start. Use FacebookSdk.fullyInitialize() instead.")
-    @Synchronized
     @JvmStatic
     fun sdkInitialize(applicationContext: Context, callbackRequestCodeOffset: Int) {
         sdkInitialize(applicationContext, callbackRequestCodeOffset, null)
@@ -381,7 +439,6 @@ object FacebookSdk {
      * [CALLBACK_OFFSET_PROPERTY].
      */
     @Deprecated("sdkInitialize is called automatically on app start. Use FacebookSdk.fullyInitialize() instead.")
-    @Synchronized
     @JvmStatic
     fun sdkInitialize(
         applicationContext: Context,
@@ -414,7 +471,6 @@ object FacebookSdk {
      * manifest setting.
      */
     @Deprecated("sdkInitialize is called automatically on app start. Use FacebookSdk.fullyInitialize() instead.")
-    @Synchronized
     @JvmStatic
     fun sdkInitialize(applicationContext: Context) {
         sdkInitialize(applicationContext, null)
@@ -435,119 +491,60 @@ object FacebookSdk {
      * controlled via the 'com.facebook.sdk.AutoLogAppEventsEnabled' manifest setting.
      */
     @Deprecated("sdkInitialize is called automatically on app start. Use FacebookSdk.fullyInitialize() instead.")
-    @Synchronized
     @JvmStatic
     fun sdkInitialize(applicationContext: Context, callback: InitializeCallback?) {
-        if (sdkInitialized.get()) {
-            callback?.onInitialized()
-            return
-        }
-
-        // Don't throw for these validations here, just log an error. We'll throw when we actually
-        // need them
-        // Only warn about missing FacebookActivity if facebook-common module is on the classpath,
-        // since FacebookActivity is provided by that module and not needed for core-only usage.
-        try {
-            Class.forName("com.facebook.FacebookActivity")
-            Validate.hasFacebookActivity(applicationContext, false)
-        } catch (e: ClassNotFoundException) {
-            // facebook-common module is not present, no need to check for FacebookActivity
-        }
-        Validate.hasInternetPermissions(applicationContext, false)
-        FacebookSdk.applicationContext = applicationContext.applicationContext
-
-        // Make sure anon_id doesn't get overridden
-        AppEventsLogger.getAnonymousAppDeviceGUID(applicationContext)
-
-        // Make sure we've loaded default settings if we haven't already.
-        loadDefaultsFromMetadata(FacebookSdk.applicationContext)
-
-        // We should have an application id by now if not throw
-        if (applicationId.isNullOrEmpty()) {
-            throw FacebookException(
-                "A valid Facebook app id must be set in the " +
-                        "AndroidManifest.xml or set by calling FacebookSdk.setApplicationId " +
-                        "before initializing the sdk."
-            )
-        }
-        // We should have an client token by now if not throw
-        if (appClientToken.isNullOrEmpty()) {
-            throw FacebookException(
-                "A valid Facebook app client token must be set in the " +
-                        "AndroidManifest.xml or set by calling FacebookSdk.setClientToken " +
-                        "before initializing the sdk."
-            )
-        }
-        // Set sdkInitialized to true now so the below async tasks don't throw not initialized
-        // exceptions.
-        sdkInitialized.set(true)
-
-        // Set sdkFullyInitialized if auto init enabled.
-        if (getAutoInitEnabled()) {
-            fullyInitialize()
-        }
-
-        // Register ActivityLifecycleTracker callbacks now, so will log activate app event properly
-        if (FacebookSdk.applicationContext is Application &&
-            UserSettingsManager.getAutoLogAppEventsEnabled()
-        ) {
-            startTracking(FacebookSdk.applicationContext as Application, applicationId)
-        } else {
-            InAppPurchaseLoggerManager.updateLatestPossiblePurchaseTime()
-        }
-        AppLinkManager.getInstance()
-            ?.setupLifecycleListener(FacebookSdk.applicationContext as Application)
-
-        // Load app settings from network so that dialog configs are available
-        loadAppSettingsAsync()
-
-        // Fetch available protocol versions from the apps on the device
-        updateAllAvailableProtocolVersionsAsync()
-        BoltsMeasurementEventListener.getInstance(FacebookSdk.applicationContext)
-        cacheDir = LockOnGetVariable<File> { FacebookSdk.applicationContext.cacheDir }
-        FeatureManager.checkFeature(FeatureManager.Feature.Instrument) { enabled ->
-            if (enabled) {
-                InstrumentManager.start()
+        synchronized(TrackingConsent.lock) {
+            FacebookSdk.applicationContext = applicationContext.applicationContext
+            if (!TrackingConsent.isEnabled()) {
+                setTrackingEnabled(applicationContext, false)
+                SdkInitialization.reject(callback, FacebookException("Tracking consent is required before initializing the Facebook SDK"))
+                return
             }
-        }
-        FeatureManager.checkFeature(FeatureManager.Feature.AppEvents) { enabled ->
-            if (enabled) {
-                AppEventsManager.start()
+            if (sdkInitialized.get()) {
+                if (initializationComplete) callback?.onInitialized()
+                else initialization?.add(callback)
+                return
             }
-        }
-        FeatureManager.checkFeature(FeatureManager.Feature.ChromeCustomTabsPrefetching) { enabled ->
-            if (enabled) {
-                hasCustomTabsPrefetching = true
+            loadDefaultsFromMetadata(FacebookSdk.applicationContext)
+            if (applicationId.isNullOrEmpty() || appClientToken.isNullOrEmpty()) {
+                SdkInitialization.reject(callback, FacebookException("Set a valid Facebook application ID and client token before initializing the SDK"))
+                return
             }
-        }
-        FeatureManager.checkFeature(FeatureManager.Feature.IgnoreAppSwitchToLoggedOut) { enabled ->
-            if (enabled) {
-                ignoreAppSwitchToLoggedOut = true
+            val generation = TrackingConsent.capture()
+            val attempt = SdkInitialization(generation)
+            initialization = attempt
+            attempt.add(callback)
+            sdkInitialized.set(true)
+            AppEventsLogger.getAnonymousAppDeviceGUID(applicationContext)
+            cacheDir = LockOnGetVariable<File> { FacebookSdk.applicationContext.cacheDir }
+            if (getAutoInitEnabled()) fullyInitialize()
+            if (getAutoLogAppEventsEnabled()) {
+                if (FacebookSdk.applicationContext is Application) startTracking(FacebookSdk.applicationContext as Application, applicationId)
+                AppLinkManager.getInstance()?.setupLifecycleListener(FacebookSdk.applicationContext as Application)
+                updateAllAvailableProtocolVersionsAsync()
+                BoltsMeasurementEventListener.getInstance(FacebookSdk.applicationContext)
+                FeatureManager.checkFeature(FeatureManager.Feature.Instrument) { enabled -> if (enabled) InstrumentManager.start() }
+                FeatureManager.checkFeature(FeatureManager.Feature.AppEvents) { enabled -> if (enabled) AppEventsManager.start() }
             }
-        }
-        FeatureManager.checkFeature(FeatureManager.Feature.BypassAppSwitch) { enabled ->
-            if (enabled) {
-                bypassAppSwitch = true
-            }
-        }
-        val futureTask =
-            FutureTask<Void> {
-                AccessTokenManager.getInstance().loadCurrentAccessToken()
-                ProfileManager.getInstance().loadCurrentProfile()
-                if (AccessToken.isCurrentAccessTokenActive() && Profile.getCurrentProfile() == null) {
-                    // Access token and profile went out of sync due to a network or caching
-                    // issue, retry
-                    Profile.fetchProfileForCurrentAccessToken()
+            loadAppSettingsAsync()
+            getExecutor().execute {
+                try {
+                    AppEventsLogger.initializeLib(getApplicationContext(), applicationId)
+                } catch (error: Exception) {
+                    TrackingConsent.update(Runnable {
+                        sdkInitialized.set(false)
+                        attempt.fail(FacebookException("Facebook SDK initialization failed", error))
+                    })
+                    return@execute
                 }
-                callback?.onInitialized()
-                AppEventsLogger.initializeLib(getApplicationContext(), applicationId)
-                UserSettingsManager.logIfAutoAppLinkEnabled()
-
-                // Flush any app events that might have been persisted during last run.
-                AppEventsLogger.newLogger(getApplicationContext().applicationContext).flush()
-                null
+                TrackingConsent.update(Runnable {
+                    if (TrackingConsent.isCurrent(generation)) {
+                        initializationComplete = true
+                        attempt.succeed()
+                    }
+                })
             }
-        getExecutor().execute(futureTask)
+        }
     }
 
     /**
@@ -556,11 +553,12 @@ object FacebookSdk {
      * @return true if initialized, false if not
      */
     @JvmStatic
-    fun isInitialized(): Boolean = sdkInitialized.get()
+    fun isInitialized(): Boolean = TrackingConsent.isEnabled() && sdkInitialized.get()
 
     /** Mark Facebook SDK fully initialized to make it works as expected. */
     @JvmStatic
     fun fullyInitialize() {
+        if (!TrackingConsent.isEnabled()) return
         isFullyInitialized = true
     }
 
@@ -669,7 +667,7 @@ object FacebookSdk {
      */
     @JvmStatic
     fun getApplicationContext(): Context {
-        Validate.sdkInitialized()
+        check(this::applicationContext.isInitialized) { "Initialize Facebook tracking with an application context first" }
         return applicationContext
     }
 
@@ -683,6 +681,7 @@ object FacebookSdk {
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     @JvmStatic
     fun publishInstallAsync(context: Context, applicationId: String) {
+        if (!TrackingConsent.isEnabled()) return
         // grab the application context ahead of time, since we will return to the caller
         // immediately.
         val applicationContext = context.applicationContext ?: return
@@ -741,7 +740,7 @@ object FacebookSdk {
                     val editor = preferences.edit()
                     lastPing = System.currentTimeMillis()
                     editor.putLong(pingKey, lastPing)
-                    editor.apply()
+                    TrackingConsent.update(Runnable { editor.apply() })
                     log(
                         LoggingBehavior.APP_EVENTS,
                         TAG,
@@ -878,7 +877,7 @@ object FacebookSdk {
             } catch (e: NoSuchAlgorithmException) {
                 return null
             }
-        md.update(packageInfo.signatures[0].toByteArray())
+        md.update(signatures[0].toByteArray())
         return Base64.encodeToString(md.digest(), Base64.URL_SAFE or Base64.NO_PADDING)
     }
 
@@ -1013,7 +1012,7 @@ object FacebookSdk {
      * @return the auto logging events flag for the application
      */
     @JvmStatic
-    fun getAutoLogAppEventsEnabled(): Boolean = UserSettingsManager.getAutoLogAppEventsEnabled()
+    fun getAutoLogAppEventsEnabled(): Boolean = TrackingConsent.isEnabled() && UserSettingsManager.getAutoLogAppEventsEnabled()
 
     /**
      * Sets the auto logging events flag for the application [com.facebook.appevents.AppEventsLogger]
@@ -1046,7 +1045,7 @@ object FacebookSdk {
     /** @return the advertiserID collection flag for the application */
     @JvmStatic
     fun getAdvertiserIDCollectionEnabled(): Boolean =
-        UserSettingsManager.getAdvertiserIDCollectionEnabled()
+        TrackingConsent.isEnabled() && UserSettingsManager.getAdvertiserIDCollectionEnabled()
 
     /**
      * Sets the advertiserID collection flag for the application
@@ -1184,6 +1183,10 @@ object FacebookSdk {
     }
 
     /** Callback passed to the sdkInitialize function. */
+    interface TrackingInitializeCallback : InitializeCallback {
+        fun onInitializationFailed(error: FacebookException)
+    }
+
     fun interface InitializeCallback {
         /** Called when the sdk has been initialized. */
         fun onInitialized()

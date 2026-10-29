@@ -8,6 +8,8 @@
 
 package com.facebook
 
+import com.facebook.internal.TrackingConsent
+
 import android.net.Uri
 import android.os.Parcel
 import android.os.Parcelable
@@ -233,6 +235,8 @@ class Profile : Parcelable {
      */
     @JvmStatic
     fun getCurrentProfile(): Profile? {
+    if (!TrackingConsent.isEnabled()) return null
+
       return ProfileManager.getInstance().currentProfile
     }
     /**

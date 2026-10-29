@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Context
 import android.os.Bundle
 import android.text.format.DateUtils
@@ -52,10 +54,12 @@ internal object SessionLogger {
         appId: String?,
         context: Context
     ) {
+    if (!TrackingConsent.isEnabled()) return
+
         val sourAppInfoStr = sourceApplicationInfo?.toString() ?: "Unclassified"
         val eventParams = Bundle()
         eventParams.putString(AppEventsConstants.EVENT_PARAM_SOURCE_APPLICATION, sourAppInfoStr)
-        val logger = InternalAppEventsLogger.createInstance(activityName, appId, null)
+        val logger = AppEventsLogger.newLogger(context, appId)
         logger.logEvent(AppEventsConstants.EVENT_NAME_ACTIVATED_APP, eventParams)
         if (InternalAppEventsLogger.getFlushBehavior() != AppEventsLogger.FlushBehavior.EXPLICIT_ONLY) {
             logger.flush()

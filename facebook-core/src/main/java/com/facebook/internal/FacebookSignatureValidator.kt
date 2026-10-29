@@ -45,11 +45,12 @@ object FacebookSignatureValidator {
           context.packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
 
       // just in case
-      if (packageInfo.signatures == null || packageInfo.signatures.isEmpty()) {
+      val signatures = packageInfo.signatures
+    if (signatures.isNullOrEmpty()) {
         return false
       }
 
-      return packageInfo.signatures.all {
+      return signatures.all {
         validAppSignatureHashes.contains(Utility.sha1hash(it.toByteArray()))
       }
     } catch (e: PackageManager.NameNotFoundException) {

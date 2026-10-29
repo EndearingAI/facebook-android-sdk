@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.util.Log
 import com.facebook.FacebookSdk
 import com.facebook.appevents.internal.AppEventUtility.assertIsNotMainThread
@@ -29,6 +31,9 @@ internal object AppEventDiskStore {
   @Synchronized
   @JvmStatic
   fun readAndClearStore(): PersistedEvents {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return PersistedEvents()
+
     assertIsNotMainThread()
     var persistedEvents: PersistedEvents? = null
     val context = FacebookSdk.getApplicationContext()
@@ -56,11 +61,16 @@ internal object AppEventDiskStore {
       }
     }
     return persistedEvents ?: PersistedEvents()
+
+    }
   }
 
   // Only call from singleThreadExecutor
   @JvmStatic
   internal fun saveEventsToDisk(eventsToPersist: PersistedEvents?) {
+    synchronized(TrackingConsent.lock) {
+    if (!TrackingConsent.isEnabled()) return
+
     val context = FacebookSdk.getApplicationContext()
     try {
       ObjectOutputStream(
@@ -74,6 +84,8 @@ internal object AppEventDiskStore {
       } catch (innerException: Exception) {
         // ignore
       }
+    }
+
     }
   }
 

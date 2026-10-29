@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.codeless
 
+import com.facebook.internal.TrackingConsent
+
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -52,15 +54,18 @@ import org.json.JSONObject
 
 @AutoHandleExceptions
 class ViewIndexer(activity: Activity) {
+  private val consentGeneration = TrackingConsent.capture()
   private val uiThreadHandler: Handler
   private val activityReference: WeakReference<Activity> = WeakReference(activity)
   private var indexingTimer: Timer? = null
   private var previousDigest: String? = null
 
   fun schedule() {
+    if (!TrackingConsent.isCurrent(consentGeneration) || !com.facebook.FacebookSdk.getAutoLogAppEventsEnabled()) return
     val indexingTask: TimerTask =
         object : TimerTask() {
           override fun run() {
+            if (!TrackingConsent.isCurrent(consentGeneration)) return
             try {
               val activity = activityReference.get()
               val rootView = getRootView(activity)
@@ -120,11 +125,12 @@ class ViewIndexer(activity: Activity) {
   }
 
   fun unschedule() {
-    activityReference.get() ?: return
     try {
       indexingTimer?.cancel()
 
       indexingTimer = null
+      previousDigest = null
+      uiThreadHandler.removeCallbacksAndMessages(null)
     } catch (e: Exception) {
       Log.e(TAG, "Error unscheduling indexing job", e)
     }
@@ -153,6 +159,7 @@ class ViewIndexer(activity: Activity) {
    * @param currentDigest
    */
   fun processRequest(request: GraphRequest?, currentDigest: String?) {
+    if (!TrackingConsent.isCurrent(consentGeneration)) return
     if (request == null) {
       return
     }

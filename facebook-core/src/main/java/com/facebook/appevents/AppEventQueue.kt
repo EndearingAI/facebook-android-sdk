@@ -8,6 +8,8 @@
 
 package com.facebook.appevents
 
+import com.facebook.internal.TrackingConsent
+
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -35,13 +37,18 @@ import org.json.JSONException
 
 @AutoHandleExceptions
 internal object AppEventQueue {
+  @JvmStatic internal fun clearForConsent() {
+    scheduledFuture?.cancel(true)
+    scheduledFuture = null
+    appEventCollection = AppEventCollection()
+  }
   private val TAG = AppEventQueue::class.java.name
   private val NUM_LOG_EVENTS_TO_TRY_TO_FLUSH_AFTER = 100
   private const val FLUSH_PERIOD_IN_SECONDS = 15
   private const val NO_CONNECTIVITY_ERROR_CODE = -1
 
   @Volatile private var appEventCollection = AppEventCollection()
-  private val singleThreadExecutor = Executors.newSingleThreadScheduledExecutor()
+  private val singleThreadExecutor = com.facebook.internal.ConsentScheduledExecutor(1)
   private var scheduledFuture: ScheduledFuture<*>? = null
 
   // Only call for the singleThreadExecutor
@@ -54,20 +61,32 @@ internal object AppEventQueue {
 
   @JvmStatic
   fun persistToDisk() {
+    if (!TrackingConsent.isEnabled()) return
+
     singleThreadExecutor.execute {
-      persistEvents(appEventCollection)
-      appEventCollection = AppEventCollection()
+      synchronized(TrackingConsent.lock) {
+        if (!TrackingConsent.isEnabled()) return@execute
+        persistEvents(appEventCollection)
+        appEventCollection = AppEventCollection()
+      }
     }
   }
 
   @JvmStatic
   fun flush(reason: FlushReason) {
+    if (!TrackingConsent.isEnabled()) return
+
     singleThreadExecutor.execute { flushAndWait(reason) }
   }
 
   @JvmStatic
   fun add(accessTokenAppId: AccessTokenAppIdPair, appEvent: AppEvent) {
+    if (!TrackingConsent.isEnabled()) return
+
+    if (!TrackingConsent.isCurrent(appEvent.consentGeneration)) return
     singleThreadExecutor.execute {
+      synchronized(TrackingConsent.lock) {
+      if (!TrackingConsent.isCurrent(appEvent.consentGeneration)) return@execute
       appEventCollection.addEvent(accessTokenAppId, appEvent)
       if (AppEventsLogger.getFlushBehavior() != AppEventsLogger.FlushBehavior.EXPLICIT_ONLY &&
           appEventCollection.eventCount > NUM_LOG_EVENTS_TO_TRY_TO_FLUSH_AFTER) {
@@ -76,6 +95,7 @@ internal object AppEventQueue {
         scheduledFuture =
             singleThreadExecutor.schedule(
                 flushRunnable, FLUSH_PERIOD_IN_SECONDS.toLong(), TimeUnit.SECONDS)
+      }
       }
     }
   }
@@ -90,6 +110,12 @@ internal object AppEventQueue {
 
   @JvmStatic
   fun flushAndWait(reason: FlushReason) {
+    if (!TrackingConsent.isEnabled()) return
+
+    TrackingConsent.scope(TrackingConsent.capture()) { flushWithConsent(reason) }
+  }
+
+  private fun flushWithConsent(reason: FlushReason) {
     // Read and send any persisted events
     val result = readAndClearStore()
     // Add any of the persisted app events to our list of events to send
@@ -221,6 +247,8 @@ internal object AppEventQueue {
       appEvents: SessionEventsState,
       flushState: FlushStatistics
   ) {
+    if (!TrackingConsent.isEnabled()) return
+
     val error = response.error
     var resultDescription = "Success"
     var flushResult = FlushResult.SUCCESS

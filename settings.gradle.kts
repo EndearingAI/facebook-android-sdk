@@ -28,21 +28,10 @@ include(":facebook-gamingservices")
 
 include(":facebook")
 
-// Samples
-include(":samples:HelloFacebookSample")
-
-include(":samples:Iconicus")
-
-// @fb-only: include(":samples:LoginSample")
-
-include(":samples:Scrumptious")
-
-include(":samples:FBLoginSample")
-
-include(":samples:KotlinSampleApp")
-
-// Size test
-include(":internal:testing:ApkSizeTestApp")
+// Publishing the consent fork builds only the SDK modules.
+if (providers.gradleProperty("includeSamples").isPresent) {
+  include(":samples:HelloFacebookSample", ":samples:FBLoginSample", ":samples:KotlinSampleApp")
+}
 
 if (file("internal/internal-settings.gradle").exists()) {
   apply("internal/internal-settings.gradle")

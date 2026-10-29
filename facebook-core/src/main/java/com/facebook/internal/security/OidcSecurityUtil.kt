@@ -8,6 +8,8 @@
 
 package com.facebook.internal.security
 
+import com.facebook.internal.TrackingConsent
+
 import android.util.Base64
 import android.util.Log
 import com.facebook.FacebookSdk
@@ -34,7 +36,7 @@ object OidcSecurityUtil {
     val condition = lock.newCondition()
     var result: String? = null
     FacebookSdk.getExecutor().execute {
-      val connection = openIdKeyUrl.openConnection() as HttpURLConnection
+      val connection = TrackingConsent.openConnection(openIdKeyUrl)
       try {
         val data = connection.inputStream.bufferedReader().readText()
         connection.inputStream.close()

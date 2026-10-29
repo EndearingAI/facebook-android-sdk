@@ -8,6 +8,8 @@
 
 package com.facebook.internal
 
+import com.facebook.internal.TrackingConsent
+
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -42,8 +44,8 @@ object ImageDownloader {
       }
       return field
     }
-  private val downloadQueue = WorkQueue(DOWNLOAD_QUEUE_MAX_CONCURRENT)
-  private val cacheReadQueue = WorkQueue(CACHE_READ_QUEUE_MAX_CONCURRENT)
+  private var downloadQueue = WorkQueue(DOWNLOAD_QUEUE_MAX_CONCURRENT)
+  private var cacheReadQueue = WorkQueue(CACHE_READ_QUEUE_MAX_CONCURRENT)
   private val pendingRequests: MutableMap<RequestKey, DownloaderContext> = HashMap()
 
   /**
@@ -113,6 +115,15 @@ object ImageDownloader {
     }
   }
 
+  @JvmStatic internal fun clearForConsent() {
+    synchronized(pendingRequests) {
+      pendingRequests.values.forEach { it.isCancelled = true; it.workItem?.cancel() }
+      pendingRequests.clear()
+      handler?.removeCallbacksAndMessages(null)
+      downloadQueue = WorkQueue(DOWNLOAD_QUEUE_MAX_CONCURRENT)
+      cacheReadQueue = WorkQueue(CACHE_READ_QUEUE_MAX_CONCURRENT)
+    }
+  }
   @JvmStatic
   fun clearCache() {
     ImageResponseCache.clearCache()
@@ -215,7 +226,7 @@ object ImageDownloader {
     var issueResponse = true
     try {
       val url = URL(key.uri.toString())
-      connection = url.openConnection() as HttpURLConnection
+      connection = TrackingConsent.openConnection(url)
       connection.instanceFollowRedirects = false
       when (connection.responseCode) {
         HttpURLConnection.HTTP_MOVED_PERM,

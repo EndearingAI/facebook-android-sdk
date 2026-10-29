@@ -8,6 +8,8 @@
 
 package com.facebook.appevents.cloudbridge
 
+import com.facebook.internal.TrackingConsent
+
 import com.facebook.GraphRequest
 import com.facebook.LoggingBehavior
 import com.facebook.internal.Logger
@@ -50,6 +52,10 @@ object AppEventsConversionsAPITransformerWebRequests {
   internal lateinit var credentials: CloudBridgeCredentials
   internal lateinit var transformedEvents: MutableList<Map<String, Any>>
 
+  @JvmStatic internal fun clearForConsent() {
+    if (this::transformedEvents.isInitialized) transformedEvents.clear()
+    currentRetryCount = 0
+  }
   internal const val MAX_RETRY_COUNT = 5
   internal var currentRetryCount: Int = 0
 
@@ -212,7 +218,7 @@ object AppEventsConversionsAPITransformerWebRequests {
     try {
 
       val url = URL(urlStr)
-      val httpURLConnection = url.openConnection() as HttpURLConnection
+      val httpURLConnection = TrackingConsent.openConnection(url)
       httpURLConnection.requestMethod = requestMethod
       requestProperties?.keys?.forEach { key ->
         httpURLConnection.setRequestProperty(key, requestProperties[key])
